@@ -147,6 +147,19 @@ app.post("/api/manage/stop", async (_req, res) => {
   }
 });
 
+// Manual trigger for the same stop-MC-then-shutdown-host cascade the
+// idle-reaper uses automatically after 7 days — lets you fully power down
+// on demand instead of waiting.
+app.post("/api/manage/shutdown-host", async (_req, res) => {
+  try {
+    const upstream = await callOrchestrator("/admin/shutdown-host", { method: "POST" });
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("manage/shutdown-host proxy failed", err);
+    res.status(502).json({ ok: false, error: "orchestrator unreachable" });
+  }
+});
+
 const port = config.numberEnv("WEB_PORT", 8080);
 const server = app.listen(port, () => logger.info(`web panel listening on :${port}`));
 

@@ -89,5 +89,17 @@ document.getElementById("stop-btn").addEventListener("click", async () => {
   refresh();
 });
 
+document.getElementById("shutdown-host-btn").addEventListener("click", async () => {
+  const confirmed = confirm(
+    "To zatrzyma serwer Minecraft (zapisze świat) i wyłączy CAŁY fizyczny komputer przez Proxmox. Kontynuować?"
+  );
+  if (!confirmed) return;
+  setManageMsg("Zatrzymywanie serwera i wyłączanie komputera...");
+  const res = await fetch("/api/manage/shutdown-host", { method: "POST" });
+  const data = await res.json();
+  setManageMsg(data.ok ? "Komputer wyłączony." : `Błąd: ${data.error}`);
+  refresh();
+});
+
 refresh();
 setInterval(refresh, 10000);

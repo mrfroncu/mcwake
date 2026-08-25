@@ -106,6 +106,9 @@ button {
 button:hover {
   opacity: 0.9;
 }
+.btn-danger {
+  background: #b0362c;
+}
 #manage-msg {
   color: var(--muted);
   font-size: 0.85rem;
