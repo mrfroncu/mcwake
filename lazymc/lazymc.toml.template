@@ -1,0 +1,67 @@
+# Generated at container start by entrypoint.sh from environment variables.
+# Don't edit lazymc.toml directly inside the container — edit .env instead.
+
+[public]
+address = "0.0.0.0:${PUBLIC_PORT}"
+version = "${PUBLIC_MOTD_VERSION}"
+protocol = ${PUBLIC_MOTD_PROTOCOL}
+
+[server]
+# Real Minecraft server, reachable from this container (e.g. over WireGuard).
+address = "${MC_SERVER_HOST}:${MC_SERVER_PORT}"
+
+# Just a placeholder directory lazymc expects to exist. The real
+# server.properties lives on the remote Wings server — rewriting is disabled
+# below, so this is never read from in any way that matters.
+directory = "/lazymc/serverdir"
+
+# This is the integration point: instead of lazymc spawning `java` itself, it
+# runs our bridge script, which talks to the orchestrator over HTTP to do the
+# actual WoL/Proxmox/Pterodactyl orchestration. See lazymc/bridge/wake.sh.
+command = "/lazymc/bridge/wake.sh"
+
+wake_on_start = false
+wake_on_crash = false
+
+# Must be well above the realistic worst-case cold-boot time (WoL + Proxmox
+# boot + Wings + MC container start).
+start_timeout = ${LAZYMC_START_TIMEOUT_SECONDS}
+stop_timeout = ${LAZYMC_STOP_TIMEOUT_SECONDS}
+
+# No local banned-ips.json to read (it lives on the remote server).
+block_banned_ips = false
+
+[time]
+# Tier 1 (fast): how long after the last player leaves before lazymc asks the
+# bridge script to stop the MC container. This does NOT touch the physical
+# host — see the idle-reaper service for the tier-2 (multi-day) shutdown.
+sleep_after = ${LAZYMC_SLEEP_AFTER_SECONDS}
+minimum_online_time = 60
+
+[motd]
+sleeping = "${LAZYMC_MOTD_SLEEPING}"
+starting = "${LAZYMC_MOTD_STARTING}"
+stopping = "${LAZYMC_MOTD_STOPPING}"
+
+[join]
+# "hold" is not viable here: the vanilla MC client hard-times-out logins at
+# ~30s, far shorter than a cold boot can take. "kick" gives an instant,
+# fully custom message instead - see [join.kick] below.
+methods = ["kick"]
+
+[join.kick]
+starting = "${LAZYMC_KICK_STARTING_MESSAGE}"
+stopping = "${LAZYMC_KICK_STOPPING_MESSAGE}"
+
+[rcon]
+# Not needed: Pterodactyl's own stop signal already saves the world cleanly.
+enabled = false
+
+[advanced]
+# The real server.properties lives on the remote Wings server; lazymc must
+# not try to rewrite a local one. Keep MC_SERVER_HOST/PORT here in sync with
+# the actual server-ip/server-port set on that server.
+rewrite_server_properties = false
+
+[config]
+version = "0.2.11"

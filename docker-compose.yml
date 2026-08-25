@@ -1,0 +1,62 @@
+services:
+  lazymc:
+    build:
+      context: .
+      dockerfile: lazymc/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PUBLIC_PORT:-25565}:${PUBLIC_PORT:-25565}"
+    depends_on:
+      - orchestrator
+    networks:
+      - mcwake
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - mcwake-data:/data
+    networks:
+      - mcwake
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:7100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  idle-reaper:
+    build:
+      context: .
+      dockerfile: services/idle-reaper/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - mcwake-data:/data
+    depends_on:
+      - orchestrator
+    networks:
+      - mcwake
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      - orchestrator
+    networks:
+      - mcwake
+
+networks:
+  mcwake:
+    driver: bridge
+
+volumes:
+  mcwake-data:

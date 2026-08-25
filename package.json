@@ -1,0 +1,14 @@
+{
+  "name": "mcwake",
+  "private": true,
+  "workspaces": [
+    "services/common",
+    "services/orchestrator",
+    "services/idle-reaper",
+    "services/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w services/common -w services/orchestrator -w services/idle-reaper -w services/web",
+    "typecheck": "npm exec -w services/common -w services/orchestrator -w services/idle-reaper -w services/web -- tsc --noEmit"
+  }
+}

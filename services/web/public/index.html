@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mcwake — panel</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <h1>mcwake</h1>
+  <form method="post" action="/logout"><button type="submit">Wyloguj</button></form>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Status</h2>
+    <dl id="status-grid" class="status-grid"></dl>
+  </section>
+
+  <section class="card">
+    <h2>Zarządzanie</h2>
+    <button id="start-btn">Uruchom serwer</button>
+    <button id="stop-btn">Uśpij serwer</button>
+    <p id="manage-msg"></p>
+  </section>
+
+  <section class="card">
+    <h2>Gracze</h2>
+    <table id="players-table">
+      <thead><tr><th>Gracz</th><th>Ostatnio widziany</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Zdarzenia</h2>
+    <table id="events-table">
+      <thead><tr><th>Czas</th><th>Zdarzenie</th><th>Szczegóły</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

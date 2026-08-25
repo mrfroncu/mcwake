@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.log
+
+# runtime secrets / config
+.env
+.env.local
+
+# sqlite runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# editor/OS
+.DS_Store
+.vscode/
