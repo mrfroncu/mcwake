@@ -116,7 +116,7 @@ app.get("/api/manage/overview", async (_req, res) => {
         mcServerHost: config.optionalEnv("MC_SERVER_HOST", "?"),
         mcServerPort: config.numberEnv("MC_SERVER_PORT", 25565),
         lazymcSleepAfterSeconds: config.numberEnv("LAZYMC_SLEEP_AFTER_SECONDS", 1800),
-        idleReaperThresholdDays: config.numberEnv("IDLE_REAPER_THRESHOLD_DAYS", 7),
+        idleReaperThresholdMinutes: config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080),
         idleReaperEnabled: config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true",
         hostBootTimeoutSeconds: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600),
       },

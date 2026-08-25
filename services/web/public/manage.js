@@ -39,14 +39,13 @@ async function refresh() {
   `;
 
   const p = data.policy;
-  const reaperEta = p.idleReaperEnabled
-    ? formatDuration(Math.max(0, p.idleReaperThresholdDays * 86_400_000 - idleMs))
-    : "wyłączony";
+  const thresholdMs = p.idleReaperThresholdMinutes * 60_000;
+  const reaperEta = p.idleReaperEnabled ? formatDuration(Math.max(0, thresholdMs - idleMs)) : "wyłączony";
   document.getElementById("policy-grid").innerHTML = `
     <dt>Publiczny port</dt><dd>${p.publicPort}</dd>
     <dt>Backend (Wings)</dt><dd>${escapeHtml(p.mcServerHost)}:${p.mcServerPort}</dd>
     <dt>lazymc usypia kontener po</dt><dd>${formatDuration(p.lazymcSleepAfterSeconds * 1000)} bezczynności</dd>
-    <dt>Idle-reaper wyłączy hosta po</dt><dd>${p.idleReaperEnabled ? `${p.idleReaperThresholdDays} dniach` : "—"}</dd>
+    <dt>Idle-reaper wyłączy hosta po</dt><dd>${p.idleReaperEnabled ? formatDuration(thresholdMs) : "—"}</dd>
     <dt>Do wyłączenia hosta zostało</dt><dd>${data.hostUp ? reaperEta : "host już wyłączony"}</dd>
     <dt>Limit oczekiwania na cold-boot</dt><dd>${formatDuration(p.hostBootTimeoutSeconds * 1000)}</dd>
   `;

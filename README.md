@@ -33,7 +33,7 @@ na LAN IP Unraida zamiast (jak wcześniej pewnie) na dedyka.
   wystawia `/status` dla panelu.
 - **idle-reaper** — niezależny, wolny licznik: co
   `IDLE_REAPER_POLL_INTERVAL_MINUTES` sprawdza, czy minęło
-  `IDLE_REAPER_THRESHOLD_DAYS` od ostatniej aktywności — jeśli tak, każe
+  `IDLE_REAPER_THRESHOLD_MINUTES` od ostatniej aktywności — jeśli tak, każe
   orchestratorowi wyłączyć cały host przez Proxmox.
 - **web** — panel pod hasłem: status, gracze, historia zdarzeń, ręczny
   start/stop.

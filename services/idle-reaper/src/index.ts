@@ -1,8 +1,17 @@
 import { config, db, logger, proxmox } from "@mcwake/common";
 
-const thresholdMs = config.numberEnv("IDLE_REAPER_THRESHOLD_DAYS", 7) * 24 * 60 * 60 * 1000;
+const thresholdMs = config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080) * 60 * 1000;
 const pollMs = config.numberEnv("IDLE_REAPER_POLL_INTERVAL_MINUTES", 30) * 60 * 1000;
 const enabled = config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true";
+
+function formatMs(ms: number): string {
+  const days = Math.floor(ms / 86_400_000);
+  const hours = Math.floor((ms % 86_400_000) / 3_600_000);
+  const minutes = Math.floor((ms % 3_600_000) / 60_000);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
 
 async function tick(): Promise<void> {
   if (!enabled) return;
@@ -14,15 +23,11 @@ async function tick(): Promise<void> {
 
   const idleForMs = Date.now() - db.getLastActivityAt();
   if (idleForMs < thresholdMs) {
-    logger.info(
-      `idle-reaper: idle for ${(idleForMs / 3_600_000).toFixed(1)}h, threshold is ${(thresholdMs / 3_600_000).toFixed(0)}h`
-    );
+    logger.info(`idle-reaper: idle for ${formatMs(idleForMs)}, threshold is ${formatMs(thresholdMs)}`);
     return;
   }
 
-  logger.info(
-    `idle-reaper: threshold exceeded (${(idleForMs / 86_400_000).toFixed(1)} days idle) — requesting host shutdown`
-  );
+  logger.info(`idle-reaper: threshold exceeded (${formatMs(idleForMs)} idle) — requesting host shutdown`);
   await requestShutdown();
 }
 
@@ -42,7 +47,7 @@ async function requestShutdown(): Promise<void> {
 }
 
 logger.info(
-  `idle-reaper starting — checking every ${pollMs / 60_000} min, threshold ${(thresholdMs / 86_400_000).toFixed(0)} days, enabled=${enabled}`
+  `idle-reaper starting — checking every ${pollMs / 60_000} min, threshold ${formatMs(thresholdMs)}, enabled=${enabled}`
 );
 void tick();
 setInterval(() => void tick(), pollMs);
