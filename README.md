@@ -12,10 +12,17 @@ i zewnętrzny skrypt (`lazymc/bridge/wake.sh`) pełniący rolę `server.command`
 ## Architektura
 
 ```
-gracz → [VPS: lazymc :25565] → [VPS: orchestrator] → WoL / Proxmox / Pterodactyl → [dedyk]
-                              ↘ [VPS: idle-reaper]  (7 dni ciszy → shutdown hosta)
-                              ↘ [VPS: web panel]    (status, zarządzanie, logi)
+gracz (internet) → router (port-forward) → [Unraid: lazymc :25565] → [Unraid: orchestrator] → WoL / Proxmox / Pterodactyl → [dedyk, ten sam LAN]
+                                                                     ↘ [Unraid: idle-reaper]  (7 dni ciszy → shutdown hosta)
+                                                                     ↘ [Unraid: web panel]    (status, zarządzanie, logi)
 ```
+
+Cały stos (`docker compose`) stoi na Unraidzie — osobnej, zawsze włączonej
+maszynie w tej samej sieci domowej co dedyk. Dzięki temu (inaczej niż przy
+VPS-ie) nie ma tunelu VPN w tej architekturze: orchestrator gada z dedykiem
+po zwykłych lokalnych IP, a WoL to zwykły broadcast w LAN. Publiczna
+dostępność dla graczy to zwykły port-forward na routerze domowym, wskazujący
+na LAN IP Unraida zamiast (jak wcześniej pewnie) na dedyka.
 
 - **lazymc** — proxy z MOTD, jedyna rzecz widoczna dla graczy. Gdy ktoś
   dołącza do śpiącego serwera, uruchamia `bridge/wake.sh` (skonfigurowane
@@ -39,11 +46,13 @@ Dwie niezależne warstwy bezczynności:
 
 ## Wymagania sieciowe (do ustawienia przed testami)
 
-- Tunel (np. WireGuard) między VPS-em a siecią domową — `MC_SERVER_HOST`,
-  `PROXMOX_HOST` i `WOL_TARGET_ADDRESS` muszą być osiągalne z kontenerów na
-  VPS-ie.
-- WoL włączony w BIOS/UEFI i w systemie na docelowej maszynie.
-- Karta sieciowa hosta musi mieć zasilanie standby (S5/soft-off) — jeśli
+- Unraid i dedyk w tej samej sieci LAN (żadnego VPN-a) — `MC_SERVER_HOST` i
+  `PROXMOX_HOST` to zwykłe lokalne IP dedyka, `WOL_TARGET_ADDRESS` to
+  broadcast tej sieci.
+- Port-forward na routerze domowym: WAN:`PUBLIC_PORT` → LAN IP Unraida —
+  tak łączą się gracze z zewnątrz.
+- WoL włączony w BIOS/UEFI i w systemie na dedyku.
+- Karta sieciowa dedyka musi mieć zasilanie standby (S5/soft-off) — jeśli
   kiedyś przejdziecie na wtyczkę Tapo do twardego odcięcia prądu, WoL
   przestanie działać i trzeba użyć "Restore on AC Power Loss" w BIOS zamiast
   magic packetu (`services/common/src/clients/tapo.ts` ma notatkę o tym).
@@ -60,8 +69,10 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Panel webowy: `http://<vps>:${WEB_PORT}` (domyślnie 8080), hasło z
-`WEB_PASSWORD`.
+Panel webowy: `http://<unraid-lan-ip>:${WEB_PORT}` (domyślnie 8080), hasło z
+`WEB_PASSWORD`. Domyślnie tylko w LAN — jeśli chcesz go widzieć spoza domu,
+to osobna decyzja (port-forward + mocne hasło, albo VPN do domowej sieci),
+nie jest do niczego wymagany przez resztę systemu.
 
 ## Status implementacji
 
