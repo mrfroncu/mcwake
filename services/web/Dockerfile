@@ -25,5 +25,6 @@ COPY --from=builder /app/services/common/package.json ./services/common/package.
 COPY --from=builder /app/services/web/dist ./services/web/dist
 COPY --from=builder /app/services/web/package.json ./services/web/package.json
 COPY --from=builder /app/services/web/public ./services/web/public
+COPY --from=builder /app/services/web/views ./services/web/views
 EXPOSE 8080
 CMD ["node", "services/web/dist/index.js"]

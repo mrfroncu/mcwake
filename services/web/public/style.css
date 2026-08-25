@@ -28,6 +28,24 @@ header h1 {
   margin: 0;
   letter-spacing: 0.02em;
 }
+header nav {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.btn-link,
+.btn-link-subtle {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.btn-link-subtle {
+  color: var(--muted);
+}
+.btn-link:hover,
+.btn-link-subtle:hover {
+  text-decoration: underline;
+}
 main {
   max-width: 900px;
   margin: 0 auto;
@@ -120,4 +138,25 @@ button:hover {
   background: var(--bg);
   color: var(--text);
   font-size: 1rem;
+}
+.login-hint {
+  color: #e05252;
+  font-size: 0.85rem;
+  margin: 0;
+  min-height: 1.2em;
+  text-align: center;
+}
+.log-view {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
 }

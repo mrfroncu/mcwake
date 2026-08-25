@@ -5,9 +5,10 @@ ktoś próbuje dołączyć do śpiącego serwera Minecraft, i usypia go z powrot
 po długim okresie bez graczy — żeby dedyk z 32GB RAM nie stał włączony 24/7
 między sesjami znajomych.
 
-Oparte na [lazymc](https://github.com/timvisee/lazymc) jako proxy/MOTD —
-lazymc jest używane bez żadnych modyfikacji źródła, tylko przez konfigurację
-i zewnętrzny skrypt (`lazymc/bridge/wake.sh`) pełniący rolę `server.command`.
+Oparte na [lazymc](https://github.com/timvisee/lazymc) jako proxy/MOTD,
+sterowane przez konfigurację i zewnętrzny skrypt (`lazymc/bridge/wake.sh`)
+pełniący rolę `server.command`. Jeden mały patch źródła jest jednak potrzebny
+— patrz `lazymc/patches/monitor.rs` i sekcję niżej o dużych modpackach.
 
 ## Architektura
 
@@ -43,6 +44,35 @@ Dwie niezależne warstwy bezczynności:
    sekundy, nie 10 minut.
 2. **idle-reaper** (domyślnie 7 dni) — dopiero to wyłącza cały fizyczny
    komputer przez Proxmox.
+
+## Duże modpacki (Forge) i status-ping
+
+lazymc odpytuje prawdziwy serwer bezpośrednio (status-ping) co 2 sekundy,
+żeby wykryć że już działa — niezależnie od tego czy ktoś próbuje dołączyć.
+Dwa realne problemy wyszły na to podczas testów z dużym modpackiem (ATM9,
+~300 modów) i się na nie natknięcie jest bardzo prawdopodobne przy innych
+dużych modpackach Forge:
+
+1. **Ikonka serwera (`server-icon.png`) w bibliotece protokołu ma limit
+   32 KB na całą odpowiedź status-ping.** Nieoptymalizowana ikonka 64x64
+   (nawet kilkanaście KB) w base64 potrafi to przebić. Napraw: podmień
+   `server-icon.png` na dysku serwera na dobrze skompresowany PNG (paleta
+   256 kolorów lub mniej, kilka KB) — jeśli masz dostęp do Pterodactyl
+   Client API, robi się to przez `files/write`. **Wymaga restartu serwera
+   MC** — Minecraft wczytuje ikonkę raz przy starcie.
+2. **Forge dorzuca listę modów (`forgeData`) do status-ping**, a biblioteka
+   protokołu której używa lazymc nie potrafi sparsować tego formatu przy
+   dużych modpackach (błąd `invalid type: map, expected a string`) — to nie
+   jest kwestia rozmiaru, sam kształt JSON-a jest inny niż to co biblioteka
+   rozumie. Do tego czasem `description`/MOTD jest w formacie chat-component
+   (obiekt) zamiast zwykłego stringa, co ten sam sztywny parser też odrzuca.
+
+   Na to jest patch w `lazymc/patches/monitor.rs`, nakładany w Dockerfile po
+   `git clone` przed kompilacją: gdy ścisły dekoder zawiedzie, patch ręcznie
+   wyciąga surowy JSON, usuwa `forgeData`/`modinfo`, spłaszcza obiektowe
+   `description` do zwykłego stringa, i próbuje jeszcze raz. lazymc i tak nie
+   używa tych danych (`motd.from_server=false`), więc ich wycięcie nic nie
+   psuje — tylko pozwala sparsować resztę.
 
 ## Wymagania sieciowe (do ustawienia przed testami)
 
@@ -80,7 +110,10 @@ nie jest do niczego wymagany przez resztę systemu.
 - ✅ Pterodactyl (status + power start/stop)
 - ✅ Proxmox (reachability check + shutdown)
 - ✅ Dwuwarstwowa logika bezczynności + SQLite (last-seen globalny i per-gracz)
-- ✅ Panel webowy (status/gracze/zdarzenia/ręczne sterowanie), hasło współdzielone
+- ✅ Panel webowy: publiczny status bez logowania (`/`), zarządzanie/gracze/
+  zdarzenia/logi za hasłem (`/manage`)
+- ✅ Patch lazymc na duże modpacki Forge (limit rozmiaru ikonki, format
+  `forgeData`, `description` jako chat-component) — patrz sekcja wyżej
 - ⬜ Tapo (fallback, gdyby WoL nie działał) — zaplanuj po przetestowaniu WoL,
   patrz `services/common/src/clients/tapo.ts`
 - ⬜ Synchronizacja `banned-ips.json` z Wings (obecnie `block_banned_ips=false`)

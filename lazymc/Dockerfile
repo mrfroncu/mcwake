@@ -4,8 +4,14 @@ WORKDIR /src
 # reproducible. Bump this deliberately when you want to pick up upstream
 # changes.
 ARG LAZYMC_REF=v0.2.11
-RUN git clone --branch "$LAZYMC_REF" --depth 1 https://github.com/timvisee/lazymc.git . \
-    && cargo build --release
+RUN git clone --branch "$LAZYMC_REF" --depth 1 https://github.com/timvisee/lazymc.git .
+# Patches the status monitor to: (1) log the real underlying error instead
+# of silently discarding it, and (2) fall back to a lenient JSON parse that
+# strips Forge's forgeData/modinfo mod-list field when the strict decoder
+# can't handle it (large modpacks use a shape lazymc's protocol crate
+# doesn't understand). See patches/monitor.rs.
+COPY lazymc/patches/monitor.rs src/monitor.rs
+RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \

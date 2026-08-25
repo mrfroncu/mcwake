@@ -9,8 +9,15 @@
 <body class="login-page">
 <form class="login-card" method="post" action="/login">
   <h1>mcwake</h1>
+  <p class="login-hint" id="login-hint"></p>
   <input type="password" name="password" placeholder="Hasło" autofocus required />
   <button type="submit">Zaloguj</button>
+  <a class="btn-link-subtle" href="/">← wróć do statusu</a>
 </form>
+<script>
+  if (new URLSearchParams(location.search).has("error")) {
+    document.getElementById("login-hint").textContent = "Złe hasło, spróbuj ponownie.";
+  }
+</script>
 </body>
 </html>

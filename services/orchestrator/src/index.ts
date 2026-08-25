@@ -50,6 +50,13 @@ app.post("/admin/shutdown-host", async (_req, res) => {
   }
 });
 
+app.get("/logs", (_req, res) => {
+  res.json({
+    orchestrator: logger.readTail(config.optionalEnv("LOG_FILE", "/data/logs/orchestrator.log")),
+    idleReaper: logger.readTail("/data/logs/idle-reaper.log"),
+  });
+});
+
 app.get("/status", async (_req, res) => {
   const [hostUp, mcState] = await Promise.all([
     proxmox.isReachable(),

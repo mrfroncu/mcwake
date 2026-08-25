@@ -18,6 +18,8 @@ services:
       dockerfile: services/orchestrator/Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      - LOG_FILE=/data/logs/orchestrator.log
     volumes:
       - mcwake-data:/data
     networks:
@@ -34,6 +36,8 @@ services:
       dockerfile: services/idle-reaper/Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      - LOG_FILE=/data/logs/idle-reaper.log
     volumes:
       - mcwake-data:/data
     depends_on:

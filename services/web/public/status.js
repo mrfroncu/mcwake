@@ -33,41 +33,7 @@ async function refresh() {
     <dt>Serwer Minecraft</dt><dd>${STATE_LABELS[data.mcState] ?? escapeHtml(data.mcState)}</dd>
     <dt>Bezczynność</dt><dd>${formatDuration(idleMs)}</dd>
   `;
-
-  document.querySelector("#players-table tbody").innerHTML = data.players
-    .map(
-      (p) =>
-        `<tr><td>${escapeHtml(p.name)}</td><td>${new Date(p.lastSeenAt).toLocaleString("pl-PL")}</td></tr>`
-    )
-    .join("");
-
-  document.querySelector("#events-table tbody").innerHTML = data.recentEvents
-    .map(
-      (e) =>
-        `<tr><td>${new Date(e.at).toLocaleString("pl-PL")}</td><td>${escapeHtml(e.type)}</td><td>${escapeHtml(e.detail ?? "")}</td></tr>`
-    )
-    .join("");
 }
-
-function setManageMsg(text) {
-  document.getElementById("manage-msg").textContent = text;
-}
-
-document.getElementById("start-btn").addEventListener("click", async () => {
-  setManageMsg("Uruchamianie...");
-  const res = await fetch("/api/manage/start", { method: "POST" });
-  const data = await res.json();
-  setManageMsg(data.ok ? "Serwer uruchomiony." : `Błąd: ${data.error}`);
-  refresh();
-});
-
-document.getElementById("stop-btn").addEventListener("click", async () => {
-  setManageMsg("Usypianie...");
-  const res = await fetch("/api/manage/stop", { method: "POST" });
-  const data = await res.json();
-  setManageMsg(data.ok ? "Serwer uśpiony." : `Błąd: ${data.error}`);
-  refresh();
-});
 
 refresh();
 setInterval(refresh, 10000);

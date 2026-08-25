@@ -31,6 +31,10 @@ stop_timeout = ${LAZYMC_STOP_TIMEOUT_SECONDS}
 # No local banned-ips.json to read (it lives on the remote server).
 block_banned_ips = false
 
+# Forge servers send extra data in their status response — without this,
+# lazymc can fail to parse it and never detect the server as online.
+forge = ${LAZYMC_FORGE}
+
 [time]
 # Tier 1 (fast): how long after the last player leaves before lazymc asks the
 # bridge script to stop the MC container. This does NOT touch the physical
