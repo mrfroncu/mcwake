@@ -29,7 +29,7 @@ async function refresh() {
 
   const idleMs = Date.now() - data.lastActivityAt;
   document.getElementById("status-grid").innerHTML = `
-    <dt>Komputer/host</dt><dd>${data.hostUp ? "🟢 włączony" : "⚪ wyłączony"}</dd>
+    <dt>Host/serwer</dt><dd>${data.hostUp ? "🟢 włączony" : "⚪ wyłączony"}</dd>
     <dt>Serwer Minecraft</dt><dd>${STATE_LABELS[data.mcState] ?? escapeHtml(data.mcState)}</dd>
     <dt>Bezczynność</dt><dd>${formatDuration(idleMs)}</dd>
   `;

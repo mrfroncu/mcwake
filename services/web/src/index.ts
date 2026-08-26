@@ -96,9 +96,72 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
+interface ComponentsReport {
+  [key: string]: { healthy: boolean; detail?: string };
+}
+
+async function fetchComponents(): Promise<ComponentsReport> {
+  const upstream = await callOrchestrator("/components");
+  return (await upstream.json()) as ComponentsReport;
+}
+
+// Public, unauthenticated — for external monitoring (Uptime Kuma etc). Just
+// an HTTP status code + minimal JSON per component; no session needed since
+// there's nothing sensitive in an up/down signal.
+app.get("/healthz", async (_req, res) => {
+  try {
+    const components = await fetchComponents();
+    const report = { web: { healthy: true }, ...components };
+    const allHealthy = Object.values(report).every((c) => c.healthy);
+    res.status(allHealthy ? 200 : 503).json(report);
+  } catch (err) {
+    res.status(503).json({ error: "orchestrator unreachable" });
+  }
+});
+
+app.get("/healthz/:component", async (req, res) => {
+  const { component } = req.params;
+  if (component === "web") {
+    res.status(200).json({ healthy: true });
+    return;
+  }
+  try {
+    const components = await fetchComponents();
+    const status = components[component];
+    if (!status) {
+      res.status(404).json({ error: `unknown component '${component}'` });
+      return;
+    }
+    res.status(status.healthy ? 200 : 503).json(status);
+  } catch (err) {
+    res.status(503).json({ error: "orchestrator unreachable" });
+  }
+});
+
 // Protected: full detail (players, event history, logs, policy config) plus
 // management actions — everything from here down requires a login.
 app.use("/api/manage", requireApi);
+
+app.get("/api/manage/components", async (_req, res) => {
+  try {
+    const components = await fetchComponents();
+    res.json({ web: { healthy: true }, ...components });
+  } catch (err) {
+    logger.error("components proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
+
+app.get("/api/manage/stats", async (req, res) => {
+  try {
+    const limit = req.query.limit ?? "20";
+    const upstream = await callOrchestrator(`/stats?limit=${encodeURIComponent(String(limit))}`);
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("stats proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
 
 app.get("/api/manage/overview", async (_req, res) => {
   try {

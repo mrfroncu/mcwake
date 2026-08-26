@@ -1,8 +1,11 @@
+import http from "node:http";
 import { config, db, logger, proxmox } from "@mcwake/common";
 
 const thresholdMs = config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080) * 60 * 1000;
 const pollMs = config.numberEnv("IDLE_REAPER_POLL_INTERVAL_MINUTES", 30) * 60 * 1000;
 const enabled = config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true";
+
+let lastTickAt: number | null = null;
 
 function formatMs(ms: number): string {
   const days = Math.floor(ms / 86_400_000);
@@ -14,6 +17,7 @@ function formatMs(ms: number): string {
 }
 
 async function tick(): Promise<void> {
+  lastTickAt = Date.now();
   if (!enabled) return;
 
   // Nothing to do if the host is already off — this only ever powers things
@@ -45,6 +49,21 @@ async function requestShutdown(): Promise<void> {
     logger.error("idle-reaper: shutdown request errored", err);
   }
 }
+
+// Minimal health server — lets orchestrator (and, through it, the web panel
+// and Uptime Kuma) confirm this process is alive and ticking, without
+// needing Docker socket access.
+const healthServer = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, enabled, lastTickAt, pollMs }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+const healthPort = config.numberEnv("IDLE_REAPER_PORT", 7102);
+healthServer.listen(healthPort, () => logger.info(`idle-reaper health server on :${healthPort}`));
 
 logger.info(
   `idle-reaper starting — checking every ${pollMs / 60_000} min, threshold ${formatMs(thresholdMs)}, enabled=${enabled}`

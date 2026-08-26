@@ -4,6 +4,8 @@ import { runWakeFlow } from "./wake.js";
 import { runSleepFlow } from "./sleep.js";
 import { runHostShutdownFlow } from "./hostShutdown.js";
 import { startActivityPoller } from "./activity.js";
+import { getComponentsReport } from "./components.js";
+import { getShutdownStats, getWakeStats } from "./stats.js";
 
 const app = express();
 app.use(express.json());
@@ -54,6 +56,18 @@ app.get("/logs", (_req, res) => {
   res.json({
     orchestrator: logger.readTail(config.optionalEnv("LOG_FILE", "/data/logs/orchestrator.log")),
     idleReaper: logger.readTail("/data/logs/idle-reaper.log"),
+  });
+});
+
+app.get("/components", async (_req, res) => {
+  res.json(await getComponentsReport());
+});
+
+app.get("/stats", (req, res) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  res.json({
+    wake: getWakeStats(limit),
+    shutdown: getShutdownStats(limit),
   });
 });
 

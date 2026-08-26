@@ -23,6 +23,16 @@ function getDb(): Database.Database {
         detail TEXT
       );
     `);
+
+    // Migration: CREATE TABLE IF NOT EXISTS above is a no-op on a database
+    // that already has an `events` table from before session_id existed —
+    // add the column by hand if it's missing.
+    const eventColumns = instance.prepare(`PRAGMA table_info(events)`).all() as { name: string }[];
+    if (!eventColumns.some((c) => c.name === "session_id")) {
+      instance.exec(`ALTER TABLE events ADD COLUMN session_id TEXT`);
+    }
+    instance.exec(`CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)`);
+
     instance
       .prepare(`INSERT OR IGNORE INTO activity (id, last_activity_at) VALUES (1, ?)`)
       .run(Date.now());
@@ -62,8 +72,15 @@ export function getPlayers(): PlayerRow[] {
     .all() as PlayerRow[];
 }
 
-export function recordEvent(type: string, detail?: string): void {
-  getDb().prepare(`INSERT INTO events (at, type, detail) VALUES (?, ?, ?)`).run(Date.now(), type, detail ?? null);
+/**
+ * Records an event. `sessionId` groups every event belonging to one wake/
+ * shutdown attempt together (e.g. `wake-<uuid>`, `shutdown-<uuid>`) so
+ * later phase-timing stats can be computed per attempt — see stats.ts.
+ */
+export function recordEvent(type: string, detail?: string, sessionId?: string): void {
+  getDb()
+    .prepare(`INSERT INTO events (at, type, detail, session_id) VALUES (?, ?, ?, ?)`)
+    .run(Date.now(), type, detail ?? null, sessionId ?? null);
 }
 
 export interface EventRow {
@@ -82,4 +99,25 @@ export function getLastEventAt(type: string): number | null {
     | { at: number }
     | undefined;
   return row?.at ?? null;
+}
+
+/** The `limit` most recent session ids whose session_id starts with `prefix` (e.g. "wake-"), newest first. */
+export function getRecentSessionIds(prefix: string, limit: number): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT session_id, MAX(at) as lastAt FROM events
+       WHERE session_id LIKE ? ESCAPE '\\'
+       GROUP BY session_id
+       ORDER BY lastAt DESC
+       LIMIT ?`
+    )
+    .all(`${prefix.replace(/[%_\\]/g, "\\$&")}%`, limit) as { session_id: string; lastAt: number }[];
+  return rows.map((r) => r.session_id);
+}
+
+/** All events for one session, oldest first. */
+export function getSessionEvents(sessionId: string): EventRow[] {
+  return getDb()
+    .prepare(`SELECT at, type, detail FROM events WHERE session_id = ? ORDER BY id ASC`)
+    .all(sessionId) as EventRow[];
 }

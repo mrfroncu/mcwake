@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { config, db, logger, mcstatus, pterodactyl, proxmox, tapo, wol } from "@mcwake/common";
 
 export interface WakeResult {
@@ -10,9 +11,14 @@ export interface WakeResult {
  * container) or the slow path (host is fully off — WoL/Tapo, wait for
  * Proxmox, then start the container) depending on whether Proxmox already
  * answers.
+ *
+ * Every event this flow records shares one `wake-<uuid>` session id, which
+ * is how the /stats endpoint later reconstructs per-phase timing for the
+ * last N wake attempts. See services/orchestrator/src/stats.ts.
  */
 export async function runWakeFlow(): Promise<WakeResult> {
-  db.recordEvent("wake_requested");
+  const sessionId = `wake-${crypto.randomUUID()}`;
+  db.recordEvent("wake_requested", undefined, sessionId);
   db.touchActivity();
 
   const hostAlreadyUp = await proxmox.isReachable();
@@ -20,26 +26,40 @@ export async function runWakeFlow(): Promise<WakeResult> {
 
   if (!hostAlreadyUp) {
     logger.info("wake: host is off, powering it on");
-    db.recordEvent("host_boot_start");
+    db.recordEvent("host_boot_start", undefined, sessionId);
     await powerOnHost();
+    db.recordEvent("power_on_command_sent", undefined, sessionId);
     await waitUntil(() => proxmox.isReachable(), {
       timeoutMs: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600) * 1000,
       intervalMs: config.numberEnv("HOST_POLL_INTERVAL_SECONDS", 5) * 1000,
       label: "host boot (Proxmox reachable)",
     });
-    db.recordEvent("host_boot_done");
+    db.recordEvent("host_boot_done", undefined, sessionId);
   } else {
     logger.info("wake: host already up, skipping WoL/boot wait");
   }
 
-  const state = await pterodactyl.getServerState();
-  if (state !== "running" && state !== "starting") {
-    db.recordEvent("mc_start_requested");
+  const initialState = await pterodactyl.getServerState();
+  if (initialState !== "running" && initialState !== "starting") {
+    db.recordEvent("mc_start_requested", undefined, sessionId);
     await pterodactyl.sendPowerSignal("start");
   }
 
+  // Wings can take a while to pick up the start command and bring the
+  // Docker container up in CT 800 before Minecraft/Forge itself even starts
+  // booting — track the first moment Pterodactyl reports anything other
+  // than "offline" as a separate checkpoint, splitting "container starting"
+  // from "Minecraft server boot" in the stats.
+  let containerStartingRecorded = initialState !== "offline";
   await waitUntil(
     async () => {
+      if (!containerStartingRecorded) {
+        const state = await pterodactyl.getServerState().catch(() => null);
+        if (state && state !== "offline") {
+          db.recordEvent("mc_container_starting", undefined, sessionId);
+          containerStartingRecorded = true;
+        }
+      }
       const result = await mcstatus.pingMinecraft(
         config.requireEnv("MC_SERVER_HOST"),
         config.numberEnv("MC_SERVER_PORT", 25565)
@@ -53,7 +73,7 @@ export async function runWakeFlow(): Promise<WakeResult> {
     }
   );
 
-  db.recordEvent("mc_ready", path);
+  db.recordEvent("mc_ready", path, sessionId);
   return { path };
 }
 

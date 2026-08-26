@@ -6,6 +6,30 @@ const STATE_LABELS = {
   unknown: "❓ nieznany",
 };
 
+const COMPONENT_LABELS = {
+  web: "Panel webowy",
+  orchestrator: "Orchestrator",
+  database: "Baza (SQLite)",
+  lazymc: "lazymc",
+  idleReaper: "Idle-reaper",
+  proxmox: "Proxmox API",
+  pterodactyl: "Pterodactyl API",
+  mcServer: "Serwer Minecraft",
+};
+
+const WAKE_PHASES = [
+  { key: "requestToPowerOn", cls: "p1", label: "Zlecenie → zasilanie" },
+  { key: "hostBoot", cls: "p2", label: "Boot hosta (Proxmox)" },
+  { key: "wingsContainerStart", cls: "p3", label: "Start Wings/kontenera" },
+  { key: "minecraftBoot", cls: "p4", label: "Start Minecrafta" },
+];
+
+const SHUTDOWN_PHASES = [
+  { key: "mcStop", cls: "p1", label: "Zatrzymanie MC" },
+  { key: "hostShutdown", cls: "p2", label: "Zamykanie hosta" },
+  { key: "tapoPowerCut", cls: "p3", label: "Odcięcie zasilania" },
+];
+
 function escapeHtml(str) {
   return String(str).replace(
     /[&<>"']/g,
@@ -22,6 +46,18 @@ function formatDuration(ms) {
   return `${minutes} min`;
 }
 
+function formatPhase(ms) {
+  if (ms === null || ms === undefined) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const total = Math.round(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 async function refresh() {
   const res = await fetch("/api/manage/overview");
   if (res.status === 401) {
@@ -33,7 +69,7 @@ async function refresh() {
 
   const idleMs = Date.now() - data.lastActivityAt;
   document.getElementById("status-grid").innerHTML = `
-    <dt>Komputer/host</dt><dd>${data.hostUp ? "🟢 włączony" : "⚪ wyłączony"}</dd>
+    <dt>Host/serwer</dt><dd>${data.hostUp ? "🟢 włączony" : "⚪ wyłączony"}</dd>
     <dt>Serwer Minecraft</dt><dd>${STATE_LABELS[data.mcState] ?? escapeHtml(data.mcState)}</dd>
     <dt>Bezczynność</dt><dd>${formatDuration(idleMs)}</dd>
   `;
@@ -68,6 +104,95 @@ async function refresh() {
   document.getElementById("log-idle-reaper").textContent = (data.logs?.idleReaper ?? []).join("\n");
 }
 
+async function refreshComponents() {
+  const res = await fetch("/api/manage/components");
+  if (!res.ok) return;
+  const components = await res.json();
+
+  document.getElementById("components-grid").innerHTML = Object.entries(components)
+    .map(([key, status]) => {
+      const label = COMPONENT_LABELS[key] ?? key;
+      const cls = status.healthy ? "good" : "critical";
+      const stateText = status.healthy ? "Działa" : "Niedostępny";
+      const title = status.detail ? escapeHtml(String(status.detail)) : "";
+      return `
+        <div class="component-chip" title="${title}">
+          <span class="status-dot ${cls}"></span>
+          <span class="component-text">
+            <span class="component-name">${escapeHtml(label)}</span>
+            <span class="component-state ${cls}">${stateText}</span>
+          </span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderSession(session, phaseDefs) {
+  const values = phaseDefs.map((p) => session.phases[p.key]).filter((v) => v !== null && v !== undefined);
+  const sum = values.reduce((a, b) => a + b, 0);
+
+  const segmentsHtml = phaseDefs
+    .map((p) => {
+      const v = session.phases[p.key];
+      if (v === null || v === undefined || sum === 0) return "";
+      const pct = (v / sum) * 100;
+      return `<div class="phase-segment ${p.cls}" style="width:${pct}%" title="${escapeHtml(p.label)}: ${formatPhase(v)}"></div>`;
+    })
+    .join("");
+
+  let badge = "";
+  if (session.skipped) {
+    badge = '<span class="badge badge-skipped">pominięto (host już wyłączony)</span>';
+  } else if (!session.completed) {
+    badge = '<span class="badge badge-failed">niedokończona</span>';
+  } else if (session.path) {
+    badge =
+      session.path === "fast"
+        ? '<span class="badge badge-fast">szybka ścieżka</span>'
+        : '<span class="badge badge-slow">pełne budzenie</span>';
+  }
+
+  const emptyBar = '<div class="phase-segment p1" style="width:100%;opacity:0.12"></div>';
+
+  return `
+    <div class="session-row">
+      <div class="session-meta">
+        <span>${new Date(session.startedAt).toLocaleString("pl-PL")}</span>
+        ${badge}
+        <span class="session-total">${formatPhase(session.totalMs)}</span>
+      </div>
+      <div class="phase-bar">${segmentsHtml || emptyBar}</div>
+    </div>
+  `;
+}
+
+async function refreshStats() {
+  const res = await fetch("/api/manage/stats?limit=20");
+  if (!res.ok) return;
+  const data = await res.json();
+
+  const wakeList = document.getElementById("stats-wake-list");
+  wakeList.innerHTML = data.wake.length
+    ? data.wake.map((s) => renderSession(s, WAKE_PHASES)).join("")
+    : '<p class="stats-empty">Brak jeszcze żadnego uruchomienia.</p>';
+
+  const shutdownList = document.getElementById("stats-shutdown-list");
+  shutdownList.innerHTML = data.shutdown.length
+    ? data.shutdown.map((s) => renderSession(s, SHUTDOWN_PHASES)).join("")
+    : '<p class="stats-empty">Brak jeszcze żadnego pełnego zamknięcia.</p>';
+}
+
+document.querySelectorAll(".stats-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".stats-tab").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const tab = btn.dataset.tab;
+    document.getElementById("stats-wake-panel").style.display = tab === "wake" ? "" : "none";
+    document.getElementById("stats-shutdown-panel").style.display = tab === "shutdown" ? "" : "none";
+  });
+});
+
 function setManageMsg(text) {
   document.getElementById("manage-msg").textContent = text;
 }
@@ -90,15 +215,19 @@ document.getElementById("stop-btn").addEventListener("click", async () => {
 
 document.getElementById("shutdown-host-btn").addEventListener("click", async () => {
   const confirmed = confirm(
-    "To zatrzyma serwer Minecraft (zapisze świat) i wyłączy CAŁY fizyczny komputer przez Proxmox. Kontynuować?"
+    "To zatrzyma serwer Minecraft (zapisze świat) i wyłączy CAŁY fizyczny serwer (maszynę). Kontynuować?"
   );
   if (!confirmed) return;
-  setManageMsg("Zatrzymywanie serwera i wyłączanie komputera...");
+  setManageMsg("Zatrzymywanie serwera i wyłączanie maszyny...");
   const res = await fetch("/api/manage/shutdown-host", { method: "POST" });
   const data = await res.json();
-  setManageMsg(data.ok ? "Komputer wyłączony." : `Błąd: ${data.error}`);
+  setManageMsg(data.ok ? "Serwer wyłączony." : `Błąd: ${data.error}`);
   refresh();
 });
 
 refresh();
+refreshComponents();
+refreshStats();
 setInterval(refresh, 10000);
+setInterval(refreshComponents, 20000);
+setInterval(refreshStats, 30000);

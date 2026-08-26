@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <h1>mcwake — zarządzanie</h1>
+  <h1><span class="logo-dot"></span> mcwake — zarządzanie</h1>
   <nav>
     <a class="btn-link-subtle" href="/">status publiczny</a>
     <form method="post" action="/logout"><button type="submit">Wyloguj</button></form>
@@ -23,10 +23,20 @@
 
   <section class="card">
     <h2>Zarządzanie</h2>
-    <button id="start-btn">Uruchom serwer</button>
-    <button id="stop-btn">Uśpij serwer (tylko kontener MC)</button>
-    <button id="shutdown-host-btn" class="btn-danger">Wyłącz cały komputer</button>
+    <div>
+      <button id="start-btn">Uruchom serwer</button>
+      <button id="stop-btn">Uśpij serwer (tylko kontener MC)</button>
+      <button id="shutdown-host-btn" class="btn-danger">Wyłącz cały serwer (maszynę)</button>
+    </div>
     <p id="manage-msg"></p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Komponenty</h2>
+      <span class="card-sub">bez dostępu do Docker socket — lekkie health-checki</span>
+    </div>
+    <div id="components-grid" class="component-grid"></div>
   </section>
 
   <section class="card">
@@ -34,20 +44,52 @@
     <dl id="policy-grid" class="status-grid"></dl>
   </section>
 
+  <section class="card wide">
+    <div class="card-head">
+      <h2>Statystyki uruchamiania / zamykania</h2>
+      <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy</span>
+    </div>
+    <div class="stats-tabs">
+      <button type="button" class="stats-tab active" data-tab="wake">Uruchamianie</button>
+      <button type="button" class="stats-tab" data-tab="shutdown">Zamykanie</button>
+    </div>
+    <div id="stats-wake-panel">
+      <div class="phase-legend">
+        <span><i style="background:var(--phase-1)"></i> Zlecenie → zasilanie</span>
+        <span><i style="background:var(--phase-2)"></i> Boot hosta (Proxmox)</span>
+        <span><i style="background:var(--phase-3)"></i> Start Wings / kontenera (CT 800)</span>
+        <span><i style="background:var(--phase-4)"></i> Start Minecrafta</span>
+      </div>
+      <div id="stats-wake-list" class="session-list"></div>
+    </div>
+    <div id="stats-shutdown-panel" style="display:none">
+      <div class="phase-legend">
+        <span><i style="background:var(--phase-1)"></i> Zatrzymanie MC (zapis świata)</span>
+        <span><i style="background:var(--phase-2)"></i> Zamykanie hosta (Proxmox)</span>
+        <span><i style="background:var(--phase-3)"></i> Odcięcie zasilania (Tapo)</span>
+      </div>
+      <div id="stats-shutdown-list" class="session-list"></div>
+    </div>
+  </section>
+
   <section class="card">
     <h2>Gracze</h2>
-    <table id="players-table">
-      <thead><tr><th>Gracz</th><th>Ostatnio widziany</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-scroll">
+      <table id="players-table">
+        <thead><tr><th>Gracz</th><th>Ostatnio widziany</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="card">
     <h2>Zdarzenia</h2>
-    <table id="events-table">
-      <thead><tr><th>Czas</th><th>Zdarzenie</th><th>Szczegóły</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-scroll">
+      <table id="events-table">
+        <thead><tr><th>Czas</th><th>Zdarzenie</th><th>Szczegóły</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="card">
