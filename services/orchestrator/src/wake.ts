@@ -60,6 +60,7 @@ export async function runWakeFlow(): Promise<WakeResult> {
 async function powerOnHost(): Promise<void> {
   const strategy = config.optionalEnv("POWER_ON_STRATEGY", "wol");
   if (strategy === "tapo") {
+    await waitOutTapoCooldown();
     await tapo.tapoPowerOn();
     return;
   }
@@ -68,6 +69,24 @@ async function powerOnHost(): Promise<void> {
     config.requireEnv("WOL_TARGET_ADDRESS"),
     config.numberEnv("WOL_PORT", 9)
   );
+}
+
+/**
+ * The dedyk doesn't reliably boot on AC-restore if power was only cut for a
+ * moment — it needs to stay off for a minimum stretch first. If we're
+ * asked to wake it again shortly after hostShutdown cut the plug, wait out
+ * the rest of that minimum before turning it back on.
+ */
+async function waitOutTapoCooldown(): Promise<void> {
+  const cooldownMs = config.numberEnv("TAPO_POWER_OFF_COOLDOWN_SECONDS", 120) * 1000;
+  const lastOffAt = db.getLastEventAt("tapo_power_cut_done");
+  if (lastOffAt === null) return;
+
+  const remaining = cooldownMs - (Date.now() - lastOffAt);
+  if (remaining > 0) {
+    logger.info(`wake: waiting ${Math.ceil(remaining / 1000)}s more (min power-off time) before re-enabling Tapo plug`);
+    await new Promise((resolve) => setTimeout(resolve, remaining));
+  }
 }
 
 async function waitUntil(

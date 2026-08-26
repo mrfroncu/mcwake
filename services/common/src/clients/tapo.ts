@@ -1,40 +1,52 @@
-import { loginDeviceByIp } from "tp-link-tapo-connect";
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { requireEnv, optionalEnv } from "../config.js";
 
 /**
- * Logs into the configured Tapo device (TAPO_DEVICE_IP) and, if
- * TAPO_CHILD_NAME is set, resolves it to a specific child socket — needed
- * for multi-outlet devices like the P300 power strip, where each outlet is
- * a "child device" controlled through the strip's own local API rather than
- * having its own IP.
+ * Controls the Tapo device/child socket by shelling out to a Python script
+ * (tapo/tapo_control.py, using python-kasa) rather than a native TS client.
+ *
+ * Why: our P300's current firmware (1.4.x) speaks TPAP, a newer TP-Link
+ * protocol variant (SPAKE2+ handshake) that no JS library implements yet.
+ * python-kasa has it in an unmerged upstream PR (python-kasa/python-kasa
+ * #1592) — tapo/requirements.txt pins a fork of that branch with one
+ * additional fix, at a specific commit for reproducibility. Once #1592
+ * merges and ships, requirements.txt should switch to the official release.
  */
-async function getDeviceAndChildId() {
-  const email = requireEnv("TAPO_EMAIL");
-  const password = requireEnv("TAPO_PASSWORD");
-  const ip = requireEnv("TAPO_DEVICE_IP");
-  const childName = optionalEnv("TAPO_CHILD_NAME", "");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const scriptPath = path.join(__dirname, "../../tapo/tapo_control.py");
 
-  const device = await loginDeviceByIp(email, password, ip);
-
-  if (!childName) {
-    return { device, childId: undefined as string | undefined };
-  }
-
-  const children = await device.getChildDevicesInfo();
-  const match = children.find((c) => c.nickname === childName);
-  if (!match) {
-    const available = children.map((c) => c.nickname).join(", ") || "(brak)";
-    throw new Error(`Tapo: nie znaleziono gniazda o nazwie "${childName}". Dostępne: ${available}`);
-  }
-  return { device, childId: match.device_id };
+function runTapoControl(action: "on" | "off"): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "python3",
+      [scriptPath, action],
+      {
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          TAPO_EMAIL: requireEnv("TAPO_EMAIL"),
+          TAPO_PASSWORD: requireEnv("TAPO_PASSWORD"),
+          TAPO_DEVICE_IP: requireEnv("TAPO_DEVICE_IP"),
+          TAPO_CHILD_NAME: optionalEnv("TAPO_CHILD_NAME", ""),
+        },
+      },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Tapo ${action} failed: ${stderr || error.message}`));
+          return;
+        }
+        resolve();
+      }
+    );
+  });
 }
 
 export async function tapoPowerOn(): Promise<void> {
-  const { device, childId } = await getDeviceAndChildId();
-  await device.turnOn(childId);
+  await runTapoControl("on");
 }
 
 export async function tapoPowerOff(): Promise<void> {
-  const { device, childId } = await getDeviceAndChildId();
-  await device.turnOff(childId);
+  await runTapoControl("off");
 }

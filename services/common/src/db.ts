@@ -75,3 +75,11 @@ export interface EventRow {
 export function getRecentEvents(limit = 50): EventRow[] {
   return getDb().prepare(`SELECT at, type, detail FROM events ORDER BY id DESC LIMIT ?`).all(limit) as EventRow[];
 }
+
+/** Timestamp of the most recent event of this type, or null if it never happened. */
+export function getLastEventAt(type: string): number | null {
+  const row = getDb().prepare(`SELECT at FROM events WHERE type = ? ORDER BY id DESC LIMIT 1`).get(type) as
+    | { at: number }
+    | undefined;
+  return row?.at ?? null;
+}

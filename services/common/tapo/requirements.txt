@@ -1,0 +1,9 @@
+# The official python-kasa release doesn't support the TPAP protocol our
+# Tapo P300 speaks on its current firmware (1.4.x) — that support only
+# exists in an unmerged upstream PR (python-kasa/python-kasa#1592). Pinned
+# here to a specific commit on a fork with one additional fix on top
+# (blank-credentials default, see commit message), for reproducibility.
+#
+# TODO: once python-kasa/python-kasa#1592 merges and ships in an official
+# release, replace this with a plain `python-kasa[speedups]` pin.
+python-kasa[speedups] @ git+https://github.com/mrfroncu/python-kasa.git@0e97102d2ac17795af7158f1dbd3b78107165de3
