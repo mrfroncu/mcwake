@@ -10,6 +10,7 @@
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "minecraft-server-util": "^5.4.0",
+    "tp-link-tapo-connect": "^2.0.15",
     "undici": "^6.19.8"
   },
   "devDependencies": {

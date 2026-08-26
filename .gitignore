@@ -16,3 +16,6 @@ data/
 # editor/OS
 .DS_Store
 .vscode/
+
+# wstrzymane / osobiste notatki, nie część repo
+docs/alx-wol-instrukcja.md

@@ -1,26 +1,40 @@
+import { loginDeviceByIp } from "tp-link-tapo-connect";
+import { requireEnv, optionalEnv } from "../config.js";
+
 /**
- * Placeholder for the Tapo smart-plug fallback (used only if Wake-on-LAN
- * turns out not to work reliably). Not implemented yet on purpose — the plan
- * is to get the WoL path working first (see wol.ts) and only build this if
- * needed.
- *
- * To implement: use the `tp-link-tapo-connect` npm package (supports the
- * KLAP protocol newer Tapo firmware requires) to log in with TAPO_EMAIL /
- * TAPO_PASSWORD and toggle the device at TAPO_DEVICE_IP.
- *
- * Important: a Tapo plug physically cuts power, so Wake-on-LAN will NOT work
- * to turn the machine back on afterwards — the motherboard needs
- * "Restore on AC Power Loss" enabled in BIOS instead. Don't mix both
- * strategies for the same machine.
+ * Logs into the configured Tapo device (TAPO_DEVICE_IP) and, if
+ * TAPO_CHILD_NAME is set, resolves it to a specific child socket — needed
+ * for multi-outlet devices like the P300 power strip, where each outlet is
+ * a "child device" controlled through the strip's own local API rather than
+ * having its own IP.
  */
+async function getDeviceAndChildId() {
+  const email = requireEnv("TAPO_EMAIL");
+  const password = requireEnv("TAPO_PASSWORD");
+  const ip = requireEnv("TAPO_DEVICE_IP");
+  const childName = optionalEnv("TAPO_CHILD_NAME", "");
+
+  const device = await loginDeviceByIp(email, password, ip);
+
+  if (!childName) {
+    return { device, childId: undefined as string | undefined };
+  }
+
+  const children = await device.getChildDevicesInfo();
+  const match = children.find((c) => c.nickname === childName);
+  if (!match) {
+    const available = children.map((c) => c.nickname).join(", ") || "(brak)";
+    throw new Error(`Tapo: nie znaleziono gniazda o nazwie "${childName}". Dostępne: ${available}`);
+  }
+  return { device, childId: match.device_id };
+}
 
 export async function tapoPowerOn(): Promise<void> {
-  throw new Error(
-    "POWER_ON_STRATEGY=tapo is not implemented yet. Use POWER_ON_STRATEGY=wol, " +
-      "or implement this using the tp-link-tapo-connect package."
-  );
+  const { device, childId } = await getDeviceAndChildId();
+  await device.turnOn(childId);
 }
 
 export async function tapoPowerOff(): Promise<void> {
-  throw new Error("Tapo power-off is not implemented yet.");
+  const { device, childId } = await getDeviceAndChildId();
+  await device.turnOff(childId);
 }
