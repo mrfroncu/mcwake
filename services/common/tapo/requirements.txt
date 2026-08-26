@@ -7,3 +7,8 @@
 # TODO: once python-kasa/python-kasa#1592 merges and ships in an official
 # release, replace this with a plain `python-kasa[speedups]` pin.
 python-kasa[speedups] @ git+https://github.com/mrfroncu/python-kasa.git@0e97102d2ac17795af7158f1dbd3b78107165de3
+
+# Already a transitive dep of python-kasa (it uses aiohttp internally too),
+# pinned explicitly here since tapo_daemon.py imports it directly.
+aiohttp
+

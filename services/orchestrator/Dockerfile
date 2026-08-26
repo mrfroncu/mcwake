@@ -33,5 +33,7 @@ COPY --from=builder /app/services/common/dist ./services/common/dist
 COPY --from=builder /app/services/common/package.json ./services/common/package.json
 COPY --from=builder /app/services/orchestrator/dist ./services/orchestrator/dist
 COPY --from=builder /app/services/orchestrator/package.json ./services/orchestrator/package.json
+COPY services/orchestrator/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 EXPOSE 7100
-CMD ["node", "services/orchestrator/dist/index.js"]
+ENTRYPOINT ["/entrypoint.sh"]
