@@ -25,8 +25,8 @@ function loadStatus() {
 
 setupStatsTabs(document.getElementById("stats-section"));
 
-function refreshAll() {
-  loadStatus();
+function refreshSlow() {
+  renderComponentsGrid(document.getElementById("components-grid"));
   renderStatsInto(
     document.getElementById("stats-wake-list"),
     document.getElementById("stats-shutdown-list"),
@@ -35,6 +35,7 @@ function refreshAll() {
   );
 }
 
-refreshAll();
+loadStatus();
+refreshSlow();
 setInterval(loadStatus, 10000);
-setInterval(refreshAll, 30000);
+setInterval(refreshSlow, 20000);

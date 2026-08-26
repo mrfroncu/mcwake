@@ -134,14 +134,23 @@ function renderSession(session, phaseDefs) {
 
   const emptyBar = '<div class="phase-segment p1" style="width:100%;opacity:0.12"></div>';
 
+  const detailHtml = phaseDefs
+    .map((p) => {
+      const v = session.phases[p.key];
+      if (v === null || v === undefined) return "";
+      return `<span>${escapeHtml(p.label)}: <b>${formatPhase(v)}</b></span>`;
+    })
+    .join("");
+
   return `
     <div class="session-row">
       <div class="session-meta">
         <span>${new Date(session.startedAt).toLocaleString("pl-PL")}</span>
         ${badge}
-        <span class="session-total">${formatPhase(session.totalMs)}</span>
+        <span class="session-total">razem: ${formatPhase(session.totalMs)}</span>
       </div>
       <div class="phase-bar">${segmentsHtml || emptyBar}</div>
+      ${detailHtml ? `<div class="session-phase-detail">${detailHtml}</div>` : ""}
     </div>
   `;
 }
