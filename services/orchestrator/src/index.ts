@@ -33,6 +33,19 @@ app.post("/wake", async (_req, res) => {
 });
 
 app.post("/sleep", async (_req, res) => {
+  // SLEEP_TRIGGERS_FULL_SHUTDOWN collapses the two idle tiers into one:
+  // lazymc's own sleep_after (set very long, e.g. ~7-8 days) drives a full
+  // host shutdown directly instead of just stopping the MC container.
+  // That whole cascade can run well past lazymc's stop_timeout, so this
+  // fires it and responds immediately rather than blocking on it — lazymc
+  // only needs to know the SIGTERM was received, not when the shutdown
+  // finishes.
+  if (config.optionalEnv("SLEEP_TRIGGERS_FULL_SHUTDOWN", "false") === "true") {
+    runHostShutdownFlow().catch((err) => logger.error("full shutdown (via sleep) failed", err));
+    res.json({ ok: true, mode: "full-shutdown-started" });
+    return;
+  }
+
   try {
     await runSleepFlow();
     res.json({ ok: true });
@@ -68,6 +81,24 @@ app.get("/stats", (req, res) => {
   res.json({
     wake: getWakeStats(limit),
     shutdown: getShutdownStats(limit),
+  });
+});
+
+// Fast, SQLite-only — deliberately has no dependency on Proxmox/Pterodactyl
+// reachability, so a slow/unreachable host never blocks this from loading.
+app.get("/activity", (_req, res) => {
+  const cooldownMs = config.numberEnv("TAPO_POWER_OFF_COOLDOWN_SECONDS", 120) * 1000;
+  const lastOffAt = db.getLastEventAt("tapo_power_cut_done");
+  const remainingMs = lastOffAt === null ? 0 : Math.max(0, cooldownMs - (Date.now() - lastOffAt));
+
+  res.json({
+    lastActivityAt: db.getLastActivityAt(),
+    players: db.getPlayers(),
+    recentEvents: db.getRecentEvents(50),
+    tapoCooldown: {
+      active: remainingMs > 0,
+      remainingMs,
+    },
   });
 });
 

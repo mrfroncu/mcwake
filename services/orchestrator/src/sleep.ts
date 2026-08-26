@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
 import { db, pterodactyl } from "@mcwake/common";
+import { withRetry } from "./retry.js";
+
+const PTERODACTYL_RETRY = { attempts: 8, delayMs: 20_000 };
 
 /**
  * Tier-1 idle action: stop only the Minecraft container via Pterodactyl.
@@ -12,9 +15,15 @@ import { db, pterodactyl } from "@mcwake/common";
  */
 export async function runSleepFlow(sessionId: string = `sleep-${crypto.randomUUID()}`): Promise<void> {
   db.recordEvent("sleep_requested", undefined, sessionId);
-  const state = await pterodactyl.getServerState();
+  const state = await withRetry(() => pterodactyl.getServerState(), {
+    ...PTERODACTYL_RETRY,
+    label: "sleep: initial Pterodactyl state check",
+  });
   if (state !== "offline") {
-    await pterodactyl.sendPowerSignal("stop");
+    await withRetry(() => pterodactyl.sendPowerSignal("stop"), {
+      ...PTERODACTYL_RETRY,
+      label: "sleep: send stop signal",
+    });
   }
   await waitUntilOffline();
   db.recordEvent("mc_stopped", undefined, sessionId);
@@ -23,7 +32,9 @@ export async function runSleepFlow(sessionId: string = `sleep-${crypto.randomUUI
 async function waitUntilOffline(): Promise<void> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
-    const state = await pterodactyl.getServerState();
+    // Tolerate transient Pterodactyl errors here too — just keep polling
+    // instead of aborting the whole wait on one bad response.
+    const state = await pterodactyl.getServerState().catch(() => null);
     if (state === "offline") return;
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }

@@ -44,16 +44,17 @@
     <dl id="policy-grid" class="status-grid"></dl>
   </section>
 
-  <section class="card wide">
+  <section class="card wide" id="stats-section">
     <div class="card-head">
       <h2>Statystyki uruchamiania / zamykania</h2>
-      <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy</span>
+      <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy — publiczne, patrz też strona główna</span>
     </div>
+    <p id="cooldown-banner" class="cooldown-banner"></p>
     <div class="stats-tabs">
       <button type="button" class="stats-tab active" data-tab="wake">Uruchamianie</button>
       <button type="button" class="stats-tab" data-tab="shutdown">Zamykanie</button>
     </div>
-    <div id="stats-wake-panel">
+    <div data-panel="wake">
       <div class="phase-legend">
         <span><i style="background:var(--phase-1)"></i> Zlecenie → zasilanie</span>
         <span><i style="background:var(--phase-2)"></i> Boot hosta (Proxmox)</span>
@@ -62,7 +63,7 @@
       </div>
       <div id="stats-wake-list" class="session-list"></div>
     </div>
-    <div id="stats-shutdown-panel" style="display:none">
+    <div data-panel="shutdown" style="display:none">
       <div class="phase-legend">
         <span><i style="background:var(--phase-1)"></i> Zatrzymanie MC (zapis świata)</span>
         <span><i style="background:var(--phase-2)"></i> Zamykanie hosta (Proxmox)</span>
@@ -103,6 +104,7 @@
   </section>
 </main>
 
+<script src="/common.js"></script>
 <script src="/manage.js"></script>
 </body>
 </html>

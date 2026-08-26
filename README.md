@@ -39,6 +39,11 @@ kosztowały 10-minutowego czekania, a długie realnie oszczędzały prąd:
    tygodniu realnej ciszy (nikt nawet nie próbował dołączyć) system
    wyłącza cały fizyczny serwer przez Proxmox.
 
+Da się to też spłaszczyć do **jednej warstwy**: `SLEEP_TRIGGERS_FULL_SHUTDOWN=true`
+sprawia, że sam `LAZYMC_SLEEP_AFTER_SECONDS` (ustaw na docelowy próg, np.
+~7 dni) od razu wyłącza cały host zamiast tylko usypiać kontener —
+`idle-reaper` staje się wtedy zbędny (`IDLE_REAPER_ENABLED=false`).
+
 Budzenie fizycznej maszyny (gdy warstwa wolna ją wyłączyła) idzie przez
 **wtyczkę TP-Link Tapo** sterowaną programowo (Wake-on-LAN był pierwotnym
 planem, ale sprzęt — karta Killer E2400 — nigdy nie doczekał się wsparcia

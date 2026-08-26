@@ -1,39 +1,40 @@
-const STATE_LABELS = {
-  running: "🟢 działa",
-  starting: "🟡 uruchamia się",
-  stopping: "🟡 zatrzymuje się",
-  offline: "⚪ zatrzymany",
-  unknown: "❓ nieznany",
-};
-
-function escapeHtml(str) {
-  return String(str).replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
-}
-
-function formatDuration(ms) {
-  const days = Math.floor(ms / 86_400_000);
-  const hours = Math.floor((ms % 86_400_000) / 3_600_000);
-  if (days > 0) return `${days} d ${hours} godz.`;
-  const minutes = Math.floor((ms % 3_600_000) / 60_000);
-  if (hours > 0) return `${hours} godz. ${minutes} min`;
-  return `${minutes} min`;
-}
-
-async function refresh() {
-  const res = await fetch("/api/status");
-  if (!res.ok) return;
-  const data = await res.json();
-
+function renderStatusGrid(el, data) {
   const idleMs = Date.now() - data.lastActivityAt;
-  document.getElementById("status-grid").innerHTML = `
+  el.innerHTML = `
     <dt>Host/serwer</dt><dd>${data.hostUp ? "🟢 włączony" : "⚪ wyłączony"}</dd>
     <dt>Serwer Minecraft</dt><dd>${STATE_LABELS[data.mcState] ?? escapeHtml(data.mcState)}</dd>
     <dt>Bezczynność</dt><dd>${formatDuration(idleMs)}</dd>
   `;
 }
 
-refresh();
-setInterval(refresh, 10000);
+function loadStatus() {
+  const el = document.getElementById("status-grid");
+  el.innerHTML = `
+    <dt>Host/serwer</dt><dd>Sprawdzanie…</dd>
+    <dt>Serwer Minecraft</dt><dd>Sprawdzanie…</dd>
+    <dt>Bezczynność</dt><dd>Sprawdzanie…</dd>
+  `;
+  loadInto(
+    "/api/status",
+    (data) => renderStatusGrid(el, data),
+    () => {
+      el.innerHTML = "<dt>Błąd</dt><dd>Orchestrator niedostępny</dd>";
+    }
+  );
+}
+
+setupStatsTabs(document.getElementById("stats-section"));
+
+function refreshAll() {
+  loadStatus();
+  renderStatsInto(
+    document.getElementById("stats-wake-list"),
+    document.getElementById("stats-shutdown-list"),
+    document.getElementById("cooldown-banner"),
+    20
+  );
+}
+
+refreshAll();
+setInterval(loadStatus, 10000);
+setInterval(refreshAll, 30000);

@@ -30,9 +30,8 @@ app.use(
   })
 );
 
-// Static assets (CSS/JS/login form/public status page) are freely servable —
-// none of it embeds real data, that only ever comes from the /api/* calls
-// below, which are the things actually gated by session auth.
+// Static assets (CSS/JS/login form/public pages) are freely servable — none
+// of it embeds real data, that only ever comes from the /api/* calls below.
 app.use(express.static(publicDir));
 
 app.post("/login", (req, res) => {
@@ -76,7 +75,13 @@ async function callOrchestrator(pathname: string, init: RequestInit = {}): Promi
   });
 }
 
-// Public: coarse status only, safe to show to anyone without logging in.
+// --- Public endpoints -------------------------------------------------
+// Every one of these is independent and fast (or fails fast) on purpose:
+// the panel fetches them separately so a slow/unreachable Proxmox only
+// stalls the one card that actually needs it, never the whole page.
+
+// Coarse status (hostUp/mcState) — the one public endpoint that can be slow,
+// since it depends on Proxmox/Pterodactyl reachability.
 app.get("/api/status", async (_req, res) => {
   try {
     const upstream = await callOrchestrator("/status");
@@ -96,6 +101,31 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
+// Activity: last-seen, players, event history, Tapo cooldown countdown.
+// SQLite-only on the orchestrator side — always fast.
+app.get("/api/activity", async (_req, res) => {
+  try {
+    const upstream = await callOrchestrator("/activity");
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("activity proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
+
+// Wake/shutdown phase-timing stats — SQLite-only, always fast. Public per
+// request: useful even without logging in.
+app.get("/api/stats", async (req, res) => {
+  try {
+    const limit = req.query.limit ?? "20";
+    const upstream = await callOrchestrator(`/stats?limit=${encodeURIComponent(String(limit))}`);
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("stats proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
+
 interface ComponentsReport {
   [key: string]: { healthy: boolean; detail?: string };
 }
@@ -105,9 +135,10 @@ async function fetchComponents(): Promise<ComponentsReport> {
   return (await upstream.json()) as ComponentsReport;
 }
 
-// Public, unauthenticated — for external monitoring (Uptime Kuma etc). Just
-// an HTTP status code + minimal JSON per component; no session needed since
-// there's nothing sensitive in an up/down signal.
+// For external monitoring (Uptime Kuma etc) and for the panel's own
+// per-component progressive loading. Just an HTTP status code + minimal
+// JSON; no session needed since there's nothing sensitive in an up/down
+// signal.
 app.get("/healthz", async (_req, res) => {
   try {
     const components = await fetchComponents();
@@ -119,8 +150,15 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 
+// Accept either style (`mc-server` in URLs reads better than `mcServer`,
+// but the underlying report uses camelCase keys) so the README's kebab-case
+// examples and the object's actual keys both resolve to the same thing.
+function toCamelCase(kebab: string): string {
+  return kebab.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
 app.get("/healthz/:component", async (req, res) => {
-  const { component } = req.params;
+  const component = toCamelCase(req.params.component);
   if (component === "web") {
     res.status(200).json({ healthy: true });
     return;
@@ -129,7 +167,7 @@ app.get("/healthz/:component", async (req, res) => {
     const components = await fetchComponents();
     const status = components[component];
     if (!status) {
-      res.status(404).json({ error: `unknown component '${component}'` });
+      res.status(404).json({ error: `unknown component '${req.params.component}'` });
       return;
     }
     res.status(status.healthy ? 200 : 503).json(status);
@@ -138,56 +176,31 @@ app.get("/healthz/:component", async (req, res) => {
   }
 });
 
-// Protected: full detail (players, event history, logs, policy config) plus
-// management actions — everything from here down requires a login.
+// --- Protected endpoints (session required) ----------------------------
 app.use("/api/manage", requireApi);
 
-app.get("/api/manage/components", async (_req, res) => {
+app.get("/api/manage/logs", async (_req, res) => {
   try {
-    const components = await fetchComponents();
-    res.json({ web: { healthy: true }, ...components });
-  } catch (err) {
-    logger.error("components proxy failed", err);
-    res.status(502).json({ error: "orchestrator unreachable" });
-  }
-});
-
-app.get("/api/manage/stats", async (req, res) => {
-  try {
-    const limit = req.query.limit ?? "20";
-    const upstream = await callOrchestrator(`/stats?limit=${encodeURIComponent(String(limit))}`);
+    const upstream = await callOrchestrator("/logs");
     res.status(upstream.status).json(await upstream.json());
   } catch (err) {
-    logger.error("stats proxy failed", err);
+    logger.error("logs proxy failed", err);
     res.status(502).json({ error: "orchestrator unreachable" });
   }
 });
 
-app.get("/api/manage/overview", async (_req, res) => {
-  try {
-    const [statusRes, logsRes] = await Promise.all([
-      callOrchestrator("/status"),
-      callOrchestrator("/logs"),
-    ]);
-    const status = (await statusRes.json()) as Record<string, unknown>;
-    const logs = await logsRes.json();
-    res.json({
-      ...status,
-      logs,
-      policy: {
-        publicPort: config.numberEnv("PUBLIC_PORT", 25565),
-        mcServerHost: config.optionalEnv("MC_SERVER_HOST", "?"),
-        mcServerPort: config.numberEnv("MC_SERVER_PORT", 25565),
-        lazymcSleepAfterSeconds: config.numberEnv("LAZYMC_SLEEP_AFTER_SECONDS", 1800),
-        idleReaperThresholdMinutes: config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080),
-        idleReaperEnabled: config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true",
-        hostBootTimeoutSeconds: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600),
-      },
-    });
-  } catch (err) {
-    logger.error("manage overview proxy failed", err);
-    res.status(502).json({ error: "orchestrator unreachable" });
-  }
+// Pure local config read — no network call, so this is always instant.
+app.get("/api/manage/policy", (_req, res) => {
+  res.json({
+    publicPort: config.numberEnv("PUBLIC_PORT", 25565),
+    mcServerHost: config.optionalEnv("MC_SERVER_HOST", "?"),
+    mcServerPort: config.numberEnv("MC_SERVER_PORT", 25565),
+    lazymcSleepAfterSeconds: config.numberEnv("LAZYMC_SLEEP_AFTER_SECONDS", 1800),
+    idleReaperThresholdMinutes: config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080),
+    idleReaperEnabled: config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true",
+    sleepTriggersFullShutdown: config.optionalEnv("SLEEP_TRIGGERS_FULL_SHUTDOWN", "false") === "true",
+    hostBootTimeoutSeconds: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600),
+  });
 });
 
 app.post("/api/manage/start", async (_req, res) => {
@@ -211,8 +224,8 @@ app.post("/api/manage/stop", async (_req, res) => {
 });
 
 // Manual trigger for the same stop-MC-then-shutdown-host cascade the
-// idle-reaper uses automatically after 7 days — lets you fully power down
-// on demand instead of waiting.
+// idle-reaper (or, in single-tier mode, lazymc's own sleep_after) uses
+// automatically — lets you fully power down on demand instead of waiting.
 app.post("/api/manage/shutdown-host", async (_req, res) => {
   try {
     const upstream = await callOrchestrator("/admin/shutdown-host", { method: "POST" });

@@ -12,13 +12,43 @@
   <a class="btn-link" href="/login.html">Zaloguj się do zarządzania</a>
 </header>
 
-<main class="single-col">
+<main>
   <section class="card">
     <h2>Status</h2>
     <dl id="status-grid" class="status-grid"></dl>
   </section>
+
+  <section class="card wide" id="stats-section">
+    <div class="card-head">
+      <h2>Statystyki uruchamiania / zamykania</h2>
+      <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy</span>
+    </div>
+    <p id="cooldown-banner" class="cooldown-banner"></p>
+    <div class="stats-tabs">
+      <button type="button" class="stats-tab active" data-tab="wake">Uruchamianie</button>
+      <button type="button" class="stats-tab" data-tab="shutdown">Zamykanie</button>
+    </div>
+    <div data-panel="wake">
+      <div class="phase-legend">
+        <span><i style="background:var(--phase-1)"></i> Zlecenie → zasilanie</span>
+        <span><i style="background:var(--phase-2)"></i> Boot hosta (Proxmox)</span>
+        <span><i style="background:var(--phase-3)"></i> Start Wings / kontenera</span>
+        <span><i style="background:var(--phase-4)"></i> Start Minecrafta</span>
+      </div>
+      <div id="stats-wake-list" class="session-list"></div>
+    </div>
+    <div data-panel="shutdown" style="display:none">
+      <div class="phase-legend">
+        <span><i style="background:var(--phase-1)"></i> Zatrzymanie MC (zapis świata)</span>
+        <span><i style="background:var(--phase-2)"></i> Zamykanie hosta (Proxmox)</span>
+        <span><i style="background:var(--phase-3)"></i> Odcięcie zasilania (Tapo)</span>
+      </div>
+      <div id="stats-shutdown-list" class="session-list"></div>
+    </div>
+  </section>
 </main>
 
+<script src="/common.js"></script>
 <script src="/status.js"></script>
 </body>
 </html>

@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
 import { config, db, logger, mcstatus, pterodactyl, proxmox, tapo, wol } from "@mcwake/common";
+import { withRetry } from "./retry.js";
+
+/** Pterodactyl sits behind Cloudflare and can return a transient 502/504
+ * right after a cold boot — tolerate that instead of failing the whole
+ * wake attempt over one hiccup. Retries for ~2-3 minutes total. */
+const PTERODACTYL_RETRY = { attempts: 8, delayMs: 20_000 };
 
 export interface WakeResult {
   path: "fast" | "slow";
@@ -39,10 +45,16 @@ export async function runWakeFlow(): Promise<WakeResult> {
     logger.info("wake: host already up, skipping WoL/boot wait");
   }
 
-  const initialState = await pterodactyl.getServerState();
+  const initialState = await withRetry(() => pterodactyl.getServerState(), {
+    ...PTERODACTYL_RETRY,
+    label: "wake: initial Pterodactyl state check",
+  });
   if (initialState !== "running" && initialState !== "starting") {
     db.recordEvent("mc_start_requested", undefined, sessionId);
-    await pterodactyl.sendPowerSignal("start");
+    await withRetry(() => pterodactyl.sendPowerSignal("start"), {
+      ...PTERODACTYL_RETRY,
+      label: "wake: send start signal",
+    });
   }
 
   // Wings can take a while to pick up the start command and bring the

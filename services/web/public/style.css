@@ -262,6 +262,24 @@ button:active {
   background: var(--status-warning);
   box-shadow: 0 0 0 3px rgba(250, 178, 25, 0.16);
 }
+.status-dot.loading {
+  background: var(--faint);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+.cooldown-banner {
+  display: none;
+  background: rgba(250, 178, 25, 0.1);
+  border: 1px solid rgba(250, 178, 25, 0.3);
+  color: #ffcb61;
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.83rem;
+  margin-bottom: 0.9rem;
+}
 
 .component-grid {
   display: grid;
