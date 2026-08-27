@@ -231,13 +231,20 @@ pyta o potwierdzenie.
 
 ## Bezpieczeństwo i odporność na błędy
 
-- **Sprawdzenie graczy bezpośrednio na serwerze przed uśpieniem/wyłączeniem.**
-  `lazymc` widzi tylko graczy którzy połączyli się przez jego proxy — jeśli
-  istnieje dowolna inna droga do prawdziwego serwera (np. bezpośrednie
-  połączenie zapasowe), orchestrator i tak sprawdza żywy stan wprost na
-  serwerze (status-ping) tuż przed każdym usypianiem/wyłączeniem —
-  automatycznym i ręcznym z panelu. Jeśli ktokolwiek jest online, operacja
-  jest odrzucana i zapisywana jako zdarzenie `sleep_aborted`.
+- **Licznik bezczynności nie zależy tylko od lazymc.** `lazymc` widzi
+  wyłącznie graczy, którzy połączyli się przez jego proxy — jeśli istnieje
+  dowolna inna droga do prawdziwego serwera (np. bezpośrednie połączenie
+  zapasowe), sam licznik bezczynności byłby ślepy na taką aktywność. Dlatego
+  niezależny poller (`activity.ts`) co 30s pinguje prawdziwy serwer
+  **wprost**, z pominięciem lazymc, i odświeża globalny znacznik ostatniej
+  aktywności zawsze gdy ktokolwiek jest online — niezależnie jak się
+  połączył. To ten sam znacznik, który `idle-reaper` porównuje z progiem
+  wyłączenia.
+- **Dodatkowa kontrola tuż przed wykonaniem.** Niezależnie od powyższego,
+  orchestrator jeszcze raz pinguje serwer bezpośrednio tuż przed każdym
+  faktycznym usypianiem/wyłączeniem (automatycznym i ręcznym z panelu) —
+  jeśli ktokolwiek jest akurat online, operacja jest odrzucana i zapisywana
+  jako zdarzenie `sleep_aborted`.
 - **Awaria Unraida nie może "zablokować" serwera w złym stanie.** Zarówno
   budzenie jak i usypianie idą przez orchestrator — jeśli host go hostujący
   nie działa, żadna z tych akcji się nie wykona (nie tylko budzenie).
