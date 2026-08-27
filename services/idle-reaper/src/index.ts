@@ -1,9 +1,5 @@
 import http from "node:http";
-import { config, db, logger, proxmox } from "@mcwake/common";
-
-const thresholdMs = config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080) * 60 * 1000;
-const pollMs = config.numberEnv("IDLE_REAPER_POLL_INTERVAL_MINUTES", 30) * 60 * 1000;
-const enabled = config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true";
+import { config, db, logger, proxmox, settings } from "@mcwake/common";
 
 let lastTickAt: number | null = null;
 
@@ -18,13 +14,14 @@ function formatMs(ms: number): string {
 
 async function tick(): Promise<void> {
   lastTickAt = Date.now();
-  if (!enabled) return;
+  if (!settings.getEffectiveBoolean("IDLE_REAPER_ENABLED")) return;
 
   // Nothing to do if the host is already off — this only ever powers things
   // down, never up (waking up is entirely the lazymc/orchestrator path).
   const hostUp = await proxmox.isReachable();
   if (!hostUp) return;
 
+  const thresholdMs = settings.getEffectiveNumber("IDLE_REAPER_THRESHOLD_MINUTES") * 60 * 1000;
   const idleForMs = Date.now() - db.getLastActivityAt();
   if (idleForMs < thresholdMs) {
     logger.info(`idle-reaper: idle for ${formatMs(idleForMs)}, threshold is ${formatMs(thresholdMs)}`);
@@ -56,7 +53,14 @@ async function requestShutdown(): Promise<void> {
 const healthServer = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, enabled, lastTickAt, pollMs }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        enabled: settings.getEffectiveBoolean("IDLE_REAPER_ENABLED"),
+        lastTickAt,
+        pollMs: settings.getEffectiveNumber("IDLE_REAPER_POLL_INTERVAL_MINUTES") * 60 * 1000,
+      })
+    );
     return;
   }
   res.writeHead(404);
@@ -65,8 +69,18 @@ const healthServer = http.createServer((req, res) => {
 const healthPort = config.numberEnv("IDLE_REAPER_PORT", 7102);
 healthServer.listen(healthPort, () => logger.info(`idle-reaper health server on :${healthPort}`));
 
+// Recursive setTimeout (not setInterval) so a panel change to the poll
+// interval takes effect on the very next scheduled tick, no restart needed.
+function scheduleNext(): void {
+  const pollMs = settings.getEffectiveNumber("IDLE_REAPER_POLL_INTERVAL_MINUTES") * 60 * 1000;
+  setTimeout(() => {
+    void tick().finally(scheduleNext);
+  }, pollMs);
+}
+
 logger.info(
-  `idle-reaper starting — checking every ${pollMs / 60_000} min, threshold ${formatMs(thresholdMs)}, enabled=${enabled}`
+  `idle-reaper starting — checking every ${settings.getEffectiveNumber("IDLE_REAPER_POLL_INTERVAL_MINUTES")} min, ` +
+    `threshold ${formatMs(settings.getEffectiveNumber("IDLE_REAPER_THRESHOLD_MINUTES") * 60 * 1000)}, ` +
+    `enabled=${settings.getEffectiveBoolean("IDLE_REAPER_ENABLED")}`
 );
-void tick();
-setInterval(() => void tick(), pollMs);
+void tick().finally(scheduleNext);

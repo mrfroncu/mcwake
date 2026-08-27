@@ -9,26 +9,23 @@
 <body>
 <header>
   <h1><span class="logo-dot"></span> mcwake</h1>
-  <a class="btn-link" href="/login.html">Zaloguj się do zarządzania</a>
+  <a class="btn-link" href="/manage">Przejdź do zarządzania</a>
 </header>
 
 <main>
-  <section class="card">
-    <h2>Status</h2>
-    <dl id="status-grid" class="status-grid"></dl>
-  </section>
-
+  <p id="maintenance-banner" class="cooldown-banner maintenance-banner"></p>
   <section class="card wide">
     <div class="card-head">
-      <h2>Komponenty</h2>
+      <h2 data-icon="grid">Komponenty</h2>
       <span class="card-sub">status każdego elementu systemu</span>
     </div>
+    <p id="idle-line" class="idle-line"></p>
     <div id="components-grid" class="component-grid"></div>
   </section>
 
   <section class="card wide" id="stats-section">
     <div class="card-head">
-      <h2>Statystyki uruchamiania / zamykania</h2>
+      <h2 data-icon="chart">Statystyki uruchamiania / zamykania</h2>
       <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy</span>
     </div>
     <p id="cooldown-banner" class="cooldown-banner"></p>

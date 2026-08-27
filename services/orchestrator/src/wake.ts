@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { config, db, logger, mcstatus, pterodactyl, proxmox, tapo, wol } from "@mcwake/common";
+import { config, db, logger, mcstatus, pterodactyl, proxmox, settings, tapo, wol } from "@mcwake/common";
 import { withRetry } from "./retry.js";
 
 /** Pterodactyl sits behind Cloudflare and can return a transient 502/504
@@ -23,6 +23,14 @@ export interface WakeResult {
  * last N wake attempts. See services/orchestrator/src/stats.ts.
  */
 export async function runWakeFlow(): Promise<WakeResult> {
+  // Hard guard, independent of lazymc's own [lockout] behavior: while
+  // maintenance mode is on, refuse to touch Tapo/Proxmox/Pterodactyl at all,
+  // no matter what triggered this call (lazymc's join hook or the panel's
+  // own Start button).
+  if (db.getSetting("LAZYMC_LOCKOUT_ENABLED") === "true") {
+    throw new Error("wake refused: maintenance mode (tryb przerwy technicznej) is active");
+  }
+
   const sessionId = `wake-${crypto.randomUUID()}`;
   db.recordEvent("wake_requested", undefined, sessionId);
   db.touchActivity();
@@ -90,7 +98,7 @@ export async function runWakeFlow(): Promise<WakeResult> {
 }
 
 async function powerOnHost(): Promise<void> {
-  const strategy = config.optionalEnv("POWER_ON_STRATEGY", "wol");
+  const strategy = settings.getEffectiveString("POWER_ON_STRATEGY");
   if (strategy === "tapo") {
     await waitOutTapoCooldown();
     await tapo.tapoPowerOn();
@@ -110,7 +118,7 @@ async function powerOnHost(): Promise<void> {
  * the rest of that minimum before turning it back on.
  */
 async function waitOutTapoCooldown(): Promise<void> {
-  const cooldownMs = config.numberEnv("TAPO_POWER_OFF_COOLDOWN_SECONDS", 120) * 1000;
+  const cooldownMs = settings.getEffectiveNumber("TAPO_POWER_OFF_COOLDOWN_SECONDS") * 1000;
   const lastOffAt = db.getLastEventAt("tapo_power_cut_done");
   if (lastOffAt === null) return;
 

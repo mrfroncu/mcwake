@@ -16,37 +16,74 @@
 </header>
 
 <main>
-  <section class="card">
-    <h2>Status</h2>
-    <dl id="status-grid" class="status-grid"></dl>
-  </section>
+  <p id="maintenance-banner" class="cooldown-banner maintenance-banner"></p>
+  <div class="half-row">
+    <section class="card">
+      <h2 data-icon="sliders">Zarządzanie</h2>
+      <div>
+        <button id="start-btn">Uruchom serwer</button>
+        <button id="stop-btn">Uśpij serwer (tylko kontener MC)</button>
+        <button id="shutdown-host-btn" class="btn-danger">Wyłącz cały serwer (maszynę)</button>
+      </div>
+      <p id="manage-msg"></p>
+      <div class="maintenance-toggle-row">
+        <label class="switch"><input type="checkbox" id="maintenance-toggle"><span></span></label>
+        <div>
+          <div class="maintenance-toggle-label">Tryb przerwy technicznej</div>
+          <div class="maintenance-toggle-desc">
+            Blokuje każde dołączenie (i budzenie hosta) natychmiastowym komunikatem — dopóki włączony, serwer nie
+            wystartuje przypadkowo, nawet jeśli gracz spróbuje dołączyć. Przełączenie restartuje lazymc.
+          </div>
+        </div>
+      </div>
+    </section>
 
-  <section class="card">
-    <h2>Zarządzanie</h2>
-    <div>
-      <button id="start-btn">Uruchom serwer</button>
-      <button id="stop-btn">Uśpij serwer (tylko kontener MC)</button>
-      <button id="shutdown-host-btn" class="btn-danger">Wyłącz cały serwer (maszynę)</button>
-    </div>
-    <p id="manage-msg"></p>
+    <section class="card">
+      <h2 data-icon="users">Gracze</h2>
+      <div class="table-scroll">
+        <table id="players-table">
+          <thead><tr><th>Gracz</th><th>Ostatnio widziany</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section class="card wide">
+    <h2 data-icon="shield">Polityka bezczynności</h2>
+    <dl id="policy-grid" class="status-grid"></dl>
   </section>
 
   <section class="card wide">
     <div class="card-head">
-      <h2>Komponenty</h2>
-      <span class="card-sub">bez dostępu do Docker socket — lekkie health-checki, publiczne też na stronie głównej</span>
+      <h2 data-icon="grid">Komponenty</h2>
+      <span class="card-sub">lekkie sprawdzenia stanu, publiczne też na stronie głównej</span>
     </div>
+    <p id="idle-line" class="idle-line"></p>
     <div id="components-grid" class="component-grid"></div>
   </section>
 
-  <section class="card">
-    <h2>Polityka bezczynności</h2>
-    <dl id="policy-grid" class="status-grid"></dl>
+  <section class="card wide" id="settings-section">
+    <div class="card-head">
+      <h2 data-icon="settings">Konfiguracja</h2>
+      <span class="card-sub">nadpisanie w panelu ma pierwszeństwo nad .env</span>
+    </div>
+    <p class="settings-hint">
+      Pola oznaczone „wymaga restartu: lazymc” zaczną obowiązywać dopiero po restarcie lazymc — rozłączy to
+      aktualnie połączonych graczy. Przycisk niżej robi to jednym kliknięciem, bez wchodzenia na serwer. Reszta
+      ustawień działa od razu, bez restartu.
+    </p>
+    <div id="settings-form"></div>
+    <div class="settings-actions">
+      <button type="button" id="settings-save-btn">Zapisz zmiany</button>
+      <button type="button" id="restart-lazymc-btn" class="btn-secondary">Zrestartuj lazymc teraz</button>
+      <span id="settings-msg"></span>
+    </div>
   </section>
 
   <section class="card wide" id="stats-section">
     <div class="card-head">
-      <h2>Statystyki uruchamiania / zamykania</h2>
+      <h2 data-icon="chart">Statystyki uruchamiania / zamykania</h2>
       <span class="card-sub">ostatnie 20 przebiegów, rozbite na fazy — publiczne, patrz też strona główna</span>
     </div>
     <p id="cooldown-banner" class="cooldown-banner"></p>
@@ -73,18 +110,8 @@
     </div>
   </section>
 
-  <section class="card">
-    <h2>Gracze</h2>
-    <div class="table-scroll">
-      <table id="players-table">
-        <thead><tr><th>Gracz</th><th>Ostatnio widziany</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
   <section class="card wide">
-    <h2>Zdarzenia</h2>
+    <h2 data-icon="list">Zdarzenia</h2>
     <div class="table-scroll">
       <table id="events-table">
         <thead><tr><th>Czas</th><th>Zdarzenie</th><th>Szczegóły</th></tr></thead>
@@ -93,18 +120,26 @@
     </div>
   </section>
 
-  <section class="card">
-    <h2>Logi — orchestrator</h2>
-    <pre id="log-orchestrator" class="log-view"></pre>
-  </section>
+  <div class="half-row triple">
+    <section class="card">
+      <h2 data-icon="terminal">Logi — orchestrator</h2>
+      <pre id="log-orchestrator" class="log-view"></pre>
+    </section>
 
-  <section class="card">
-    <h2>Logi — idle-reaper</h2>
-    <pre id="log-idle-reaper" class="log-view"></pre>
-  </section>
+    <section class="card">
+      <h2 data-icon="terminal">Logi — idle-reaper</h2>
+      <pre id="log-idle-reaper" class="log-view"></pre>
+    </section>
+
+    <section class="card">
+      <h2 data-icon="terminal">Logi — Tapo</h2>
+      <pre id="log-tapo" class="log-view"></pre>
+    </section>
+  </div>
 </main>
 
 <script src="/common.js"></script>
+<script src="/settings.js"></script>
 <script src="/manage.js"></script>
 </body>
 </html>

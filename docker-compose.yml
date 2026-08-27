@@ -22,6 +22,12 @@ services:
       - LOG_FILE=/data/logs/orchestrator.log
     volumes:
       - mcwake-data:/data
+      # Lets the panel's "restart lazymc" button (Konfiguracja section) apply
+      # settings that lazymc only re-reads at container start. This grants
+      # full control over every container on this Docker host, not just
+      # mcwake's own — comment this line out if you'd rather apply those
+      # settings manually via `docker compose restart lazymc` instead.
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - mcwake
     healthcheck:

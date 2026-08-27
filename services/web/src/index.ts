@@ -3,10 +3,13 @@ import session from "express-session";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, logger } from "@mcwake/common";
+import * as cfAccess from "./cfAccess.js";
 
 declare module "express-session" {
   interface SessionData {
     authenticated?: boolean;
+    authVia?: "password" | "cloudflare-access";
+    authEmail?: string;
   }
 }
 
@@ -32,12 +35,22 @@ app.use(
 
 // Static assets (CSS/JS/login form/public pages) are freely servable — none
 // of it embeds real data, that only ever comes from the /api/* calls below.
-app.use(express.static(publicDir));
+// no-store (not just max-age=0) because this panel sits behind a Cloudflare
+// tunnel/CDN — weaker directives have been observed getting cached at the
+// edge anyway, serving stale JS/CSS after a deploy until manually purged.
+app.use(
+  express.static(publicDir, {
+    setHeaders: (res) => {
+      res.setHeader("Cache-Control", "no-store, must-revalidate");
+    },
+  })
+);
 
 app.post("/login", (req, res) => {
   const { password } = req.body as { password?: string };
   if (password === WEB_PASSWORD) {
     req.session.authenticated = true;
+    req.session.authVia = "password";
     res.redirect("/manage");
   } else {
     res.redirect("/login.html?error=1");
@@ -48,16 +61,31 @@ app.post("/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
 });
 
-function requirePage(req: Request, res: ExpressResponse, next: NextFunction): void {
-  if (req.session.authenticated) {
+/**
+ * If the app session isn't already authenticated, tries a Cloudflare Access
+ * JWT as a second path before giving up — see cfAccess.ts. A no-op when
+ * CF_ACCESS_TEAM_DOMAIN/CF_ACCESS_AUD aren't configured.
+ */
+async function tryCloudflareAccess(req: Request): Promise<boolean> {
+  const email = await cfAccess.verify(req);
+  if (!email) return false;
+  req.session.authenticated = true;
+  req.session.authVia = "cloudflare-access";
+  req.session.authEmail = email;
+  logger.info(`session authenticated via Cloudflare Access (${email})`);
+  return true;
+}
+
+async function requirePage(req: Request, res: ExpressResponse, next: NextFunction): Promise<void> {
+  if (req.session.authenticated || (await tryCloudflareAccess(req))) {
     next();
     return;
   }
   res.redirect("/login.html");
 }
 
-function requireApi(req: Request, res: ExpressResponse, next: NextFunction): void {
-  if (req.session.authenticated) {
+async function requireApi(req: Request, res: ExpressResponse, next: NextFunction): Promise<void> {
+  if (req.session.authenticated || (await tryCloudflareAccess(req))) {
     next();
     return;
   }
@@ -190,17 +218,52 @@ app.get("/api/manage/logs", async (_req, res) => {
 });
 
 // Pure local config read — no network call, so this is always instant.
-app.get("/api/manage/policy", (_req, res) => {
-  res.json({
-    publicPort: config.numberEnv("PUBLIC_PORT", 25565),
-    mcServerHost: config.optionalEnv("MC_SERVER_HOST", "?"),
-    mcServerPort: config.numberEnv("MC_SERVER_PORT", 25565),
-    lazymcSleepAfterSeconds: config.numberEnv("LAZYMC_SLEEP_AFTER_SECONDS", 1800),
-    idleReaperThresholdMinutes: config.numberEnv("IDLE_REAPER_THRESHOLD_MINUTES", 10080),
-    idleReaperEnabled: config.optionalEnv("IDLE_REAPER_ENABLED", "true") === "true",
-    sleepTriggersFullShutdown: config.optionalEnv("SLEEP_TRIGGERS_FULL_SHUTDOWN", "false") === "true",
-    hostBootTimeoutSeconds: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600),
-  });
+// Proxmox/HOST_BOOT_TIMEOUT_SECONDS/MC_SERVER_* stay .env-only (infra, not
+// panel-editable); the rest reads through the orchestrator's effective
+// settings so panel overrides show up here too.
+app.get("/api/manage/policy", async (_req, res) => {
+  try {
+    const upstream = await callOrchestrator("/config/settings");
+    const list = (await upstream.json()) as { key: string; value: string }[];
+    const get = (key: string): string | undefined => list.find((s) => s.key === key)?.value;
+    res.json({
+      publicPort: config.numberEnv("PUBLIC_PORT", 25565),
+      mcServerHost: config.optionalEnv("MC_SERVER_HOST", "?"),
+      mcServerPort: config.numberEnv("MC_SERVER_PORT", 25565),
+      lazymcSleepAfterSeconds: Number(get("LAZYMC_SLEEP_AFTER_SECONDS") ?? 1800),
+      idleReaperThresholdMinutes: Number(get("IDLE_REAPER_THRESHOLD_MINUTES") ?? 10080),
+      idleReaperEnabled: get("IDLE_REAPER_ENABLED") === "true",
+      sleepTriggersFullShutdown: get("SLEEP_TRIGGERS_FULL_SHUTDOWN") === "true",
+      hostBootTimeoutSeconds: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600),
+    });
+  } catch (err) {
+    logger.error("policy proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
+
+app.get("/api/manage/settings", async (_req, res) => {
+  try {
+    const upstream = await callOrchestrator("/config/settings");
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("settings proxy failed", err);
+    res.status(502).json({ error: "orchestrator unreachable" });
+  }
+});
+
+app.post("/api/manage/settings", async (req, res) => {
+  try {
+    const upstream = await callOrchestrator("/config/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("settings save proxy failed", err);
+    res.status(502).json({ ok: false, error: "orchestrator unreachable" });
+  }
 });
 
 app.post("/api/manage/start", async (_req, res) => {
@@ -219,6 +282,32 @@ app.post("/api/manage/stop", async (_req, res) => {
     res.status(upstream.status).json(await upstream.json());
   } catch (err) {
     logger.error("manage/stop proxy failed", err);
+    res.status(502).json({ ok: false, error: "orchestrator unreachable" });
+  }
+});
+
+app.post("/api/manage/maintenance", async (req, res) => {
+  try {
+    const upstream = await callOrchestrator("/admin/maintenance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("maintenance proxy failed", err);
+    res.status(502).json({ ok: false, error: "orchestrator unreachable" });
+  }
+});
+
+app.post("/api/manage/restart/:service", async (req, res) => {
+  try {
+    const upstream = await callOrchestrator(`/admin/restart/${encodeURIComponent(req.params.service)}`, {
+      method: "POST",
+    });
+    res.status(upstream.status).json(await upstream.json());
+  } catch (err) {
+    logger.error("restart proxy failed", err);
     res.status(502).json({ ok: false, error: "orchestrator unreachable" });
   }
 });

@@ -57,6 +57,15 @@ methods = ["kick"]
 starting = "${LAZYMC_KICK_STARTING_MESSAGE}"
 stopping = "${LAZYMC_KICK_STOPPING_MESSAGE}"
 
+# Panel "tryb przerwy technicznej" switch (Zarządzanie). When enabled, every
+# join is instantly kicked with the message below — before any sleeping/
+# starting logic runs, so this also prevents the wake command from firing.
+# The orchestrator independently refuses /wake while this is on too, as a
+# second guard that doesn't depend on lazymc's own behavior here.
+[lockout]
+enabled = ${LAZYMC_LOCKOUT_ENABLED}
+message = "${LAZYMC_LOCKOUT_MESSAGE}"
+
 [rcon]
 # Not needed: Pterodactyl's own stop signal already saves the world cleanly.
 enabled = false
