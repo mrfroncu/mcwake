@@ -5,123 +5,359 @@ Automatyczne budzenie i usypianie całego fizycznego serwera Minecraft
 tym samym adresem, a fizyczna maszyna stoi wyłączona między sesjami zamiast
 palić prąd 24/7 dla kilkugodzinnej rozgrywki raz na jakiś czas.
 
-Gdy ktoś dołącza, a serwer śpi: dostaje komunikat "serwer się budzi, ~10
-minut" zamiast odmowy połączenia, a w tle system budzi fizyczną maszynę,
-czeka aż wstanie Proxmox, każe Pterodactylowi odpalić kontener Minecrafta, i
+Gdy ktoś dołącza, a serwer śpi: dostaje komunikat "serwer się budzi"
+zamiast odmowy połączenia, a w tle system budzi fizyczną maszynę, czeka aż
+wstanie Proxmox, każe Pterodactylowi odpalić kontener Minecrafta, i
 przepuszcza gracza automatycznie gdy tylko serwer faktycznie odpowiada. Gdy
-nikt nie gra przez dłuższy czas — system sam usypia kontener, a po dłuższej
-ciszy wyłącza cały komputer.
+nikt nie gra przez dłuższy czas — system sam usypia kontener, a po
+dłuższej ciszy wyłącza cały komputer. Całość steruje się z panelu
+webowego, bez wchodzenia na serwer po SSH.
 
 ## Spis treści
 
 - [Jak to działa (skrót)](#jak-to-działa-skrót)
 - [Architektura](#architektura)
+- [Panel webowy](#panel-webowy)
+- [Konfiguracja z panelu (nadpisania `.env`)](#konfiguracja-z-panelu-nadpisania-env)
+- [Tryb przerwy technicznej](#tryb-przerwy-technicznej)
+- [Bezpieczeństwo i odporność na błędy](#bezpieczeństwo-i-odporność-na-błędy)
 - [Technologie](#technologie)
+- [Jak to działa — krok po kroku](#jak-to-działa--krok-po-kroku)
 - [Konfiguracja zewnętrznych systemów](#konfiguracja-zewnętrznych-systemów)
 - [Instalacja](#instalacja)
-- [Korzystanie z narzędzia](#korzystanie-z-narzędzia)
-- [Jak to działa — krok po kroku](#jak-to-działa--krok-po-kroku)
+- [Monitoring zewnętrzny](#monitoring-zewnętrzny-uptime-kuma-i-podobne)
 - [Duże modpacki (Forge) i status-ping](#duże-modpacki-forge-i-status-ping)
 - [Tapo / TPAP — dlaczego Python](#tapo--tpap--dlaczego-python)
+- [Znane ograniczenia i możliwe rozszerzenia](#znane-ograniczenia-i-możliwe-rozszerzenia)
 - [Status implementacji](#status-implementacji)
 - [Struktura repo](#struktura-repo)
+- [Testowanie / rozwój](#testowanie--rozwój)
 
 ## Jak to działa (skrót)
 
-Dwie niezależne warstwy bezczynności, żeby krótkie przerwy w graniu nie
-kosztowały 10-minutowego czekania, a długie realnie oszczędzały prąd:
+Dwa modele bezczynności do wyboru jednym przełącznikiem w panelu
+(`SLEEP_TRIGGERS_FULL_SHUTDOWN`):
 
-1. **Warstwa szybka (`lazymc`, domyślnie 30 min)** — gdy ostatni gracz
-   wyjdzie, usypiany jest tylko kontener Minecraft w Pterodactylu. Fizyczny
-   komputer zostaje włączony, więc powrót tego samego dnia to restart
-   kontenera — sekundy, nie 10 minut.
-2. **Warstwa wolna (`idle-reaper`, domyślnie 7 dni)** — dopiero po
-   tygodniu realnej ciszy (nikt nawet nie próbował dołączyć) system
-   wyłącza cały fizyczny serwer przez Proxmox.
+- **Dwuwarstwowy** (domyślny) — krótkie przerwy w graniu nie kosztują
+  długiego czekania, długie realnie oszczędzają prąd:
+  1. **Warstwa szybka (`lazymc`)** — gdy ostatni gracz wyjdzie, usypiany
+     jest tylko kontener Minecraft w Pterodactylu. Fizyczny komputer
+     zostaje włączony, więc powrót tego samego dnia to restart kontenera
+     — sekundy, nie minuty.
+  2. **Warstwa wolna (`idle-reaper`)** — dopiero po realnej ciszy (domyślnie
+     7 dni) system wyłącza cały fizyczny serwer przez Proxmox.
+- **Jednowarstwowy** — sam próg `lazymc` (ustawiony na docelową wartość,
+  np. ~7 dni) od razu wyłącza cały host zamiast tylko usypiać kontener;
+  `idle-reaper` staje się wtedy zbędny.
 
-Da się to też spłaszczyć do **jednej warstwy**: `SLEEP_TRIGGERS_FULL_SHUTDOWN=true`
-sprawia, że sam `LAZYMC_SLEEP_AFTER_SECONDS` (ustaw na docelowy próg, np.
-~7 dni) od razu wyłącza cały host zamiast tylko usypiać kontener —
-`idle-reaper` staje się wtedy zbędny (`IDLE_REAPER_ENABLED=false`).
+Budzenie fizycznej maszyny idzie przez **wtyczkę TP-Link Tapo** sterowaną
+programowo (Wake-on-LAN był pierwotnym planem, ale sprzęt sieciowy nigdy
+nie doczekał się wsparcia WoL w Linuksie — [szczegóły niżej](#tapo--tpap--dlaczego-python)).
 
-Budzenie fizycznej maszyny (gdy warstwa wolna ją wyłączyła) idzie przez
-**wtyczkę TP-Link Tapo** sterowaną programowo (Wake-on-LAN był pierwotnym
-planem, ale sprzęt — karta Killer E2400 — nigdy nie doczekał się wsparcia
-WoL w Linuksie, patrz [niżej](#tapo--tpap--dlaczego-python)).
+Wszystkim steruje się z **panelu webowego**: start/stop/pełne wyłączenie,
+**tryb przerwy technicznej** (blokuje przypadkowe budzenie np. podczas
+prac serwisowych), edycja większości ustawień bez dotykania `.env`, statystyki
+czasu uruchamiania/zamykania, logi, health-check każdego komponentu.
 
 ## Architektura
 
-```
-gracz (internet)
-      │
-      ▼ port-forward na routerze domowym
-┌─────────────────────────── Unraid (zawsze włączony, ten sam LAN co dedyk) ───────────────────────────┐
-│                                                                                                          │
-│  ┌──────────┐   HTTP    ┌────────────────┐   python3 (localhost)   ┌──────────────────┐               │
-│  │  lazymc  │──────────▶│  orchestrator  │─────────────────────────▶│ tapo_daemon.py   │──▶ Tapo P300  │
-│  │  :25565  │  /wake    │     :7100      │                          │ (SPAKE2+, sesja  │    (LAN)      │
-│  │ (proxy + │  /sleep   │                │                          │  trzymana 24h)   │               │
-│  │  MOTD)   │           │  Pterodactyl ──┼──▶ panel.alleria.pl (Wings na dedyku)         │               │
-│  └──────────┘           │  Proxmox ──────┼──▶ https://<dedyk>:8006                       │               │
-│                          │  SQLite ───────┼──▶ last-seen, zdarzenia, statystyki faz       │               │
-│                          └───────┬────────┘                                               │               │
-│                                  │ HTTP /admin/shutdown-host                               │               │
-│  ┌──────────────┐                │                                                        │               │
-│  │ idle-reaper  │────────────────┘  (po 7 dniach ciszy)                                    │               │
-│  │   :7102      │                                                                          │               │
-│  └──────────────┘                                                                          │               │
-│                          ┌────────────────┐                                                │               │
-│  gracz/admin ───────────▶│      web       │──▶ /healthz* dla Uptime Kuma                   │               │
-│  (panel, przeglądarka)   │     :8459      │                                                │               │
-│                          └────────────────┘                                                │               │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph internet["Internet"]
+        player["🎮 Gracz Minecraft"]
+        admin["🧑‍💻 Admin"]
+        cfaccess["☁️ Cloudflare Access\n(opcjonalnie, przed domeną panelu)"]
+    end
+
+    subgraph unraid["Unraid — zawsze włączony, ten sam LAN co dedyk"]
+        lazymc["lazymc :60320\nproxy + MOTD"]
+        orchestrator["orchestrator :7100\ncała logika budzenia/usypiania"]
+        tapod["tapo_daemon.py\n(w kontenerze orchestratora)"]
+        reaper["idle-reaper :7102\nlicznik warstwy wolnej"]
+        web["web :8459\npanel publiczny + zarządzanie"]
+        sqlite[("SQLite\naktywność / zdarzenia / ustawienia")]
+        sock[("/var/run/docker.sock\n(restart lazymc z panelu)")]
+    end
+
+    subgraph lan["LAN (192.168.100.x)"]
+        dedyk["Dedyk\nProxmox + Wings + prawdziwy serwer MC"]
+        tapodev["🔌 Tapo P300"]
+    end
+
+    pterodactyl["Pterodactyl API\npanel.alleria.pl"]
+
+    player -->|"połączenie do gry"| lazymc
+    admin -->|"zweryfikowany token"| cfaccess --> web
+    admin -.->|"fallback: hasło, IP:port"| web
+
+    lazymc -->|"POST /wake /sleep"| orchestrator
+    lazymc -.->|"status-ping bezpośrednio co 2s"| dedyk
+
+    orchestrator --> tapod --> tapodev
+    orchestrator -->|"start/stop/status"| pterodactyl --> dedyk
+    orchestrator -->|"shutdown/reachable?"| dedyk
+    orchestrator --> sqlite
+    orchestrator -.->|"restart kontenera"| sock
+
+    reaper -->|"po progu ciszy"| orchestrator
+    web -->|"REST"| orchestrator
 ```
 
 - **lazymc** — jedyna rzecz widoczna dla graczy: proxy Minecrafta z
   customowym MOTD. Gdy ktoś dołącza do śpiącego serwera, uruchamia
   `bridge/wake.sh` (skonfigurowane jako `server.command`), które woła
   orchestrator przez HTTP i trzyma połączenie aż lazymc każe mu się
-  zatrzymać.
-- **orchestrator** — cała logika: szybka vs. wolna ścieżka budzenia,
-  Tapo, Proxmox API, Pterodactyl API, SQLite (aktywność, zdarzenia,
-  statystyki faz), health-checki pozostałych komponentów.
-- **idle-reaper** — niezależny, wolny licznik pilnujący progu 7 dni;
-  własny mini-serwer HTTP (`/health`) do monitoringu.
-- **web** — panel: publiczny status (`/`, bez logowania) + zarządzanie
-  za hasłem (`/manage`: komponenty, statystyki, gracze, zdarzenia, logi,
-  ręczne sterowanie) + `/healthz*` dla zewnętrznego monitoringu.
+  zatrzymać. Niezależnie od tego pinguje prawdziwy serwer bezpośrednio co
+  2s, żeby wykryć że już działa.
+- **orchestrator** — cała logika: szybka vs. wolna ścieżka budzenia, Tapo,
+  Proxmox API, Pterodactyl API, SQLite (aktywność, zdarzenia, ustawienia,
+  statystyki faz), health-checki pozostałych komponentów, restart lazymc
+  przez Docker Engine API.
+- **idle-reaper** — niezależny, wolny licznik pilnujący progu warstwy
+  wolnej; własny mini-serwer HTTP (`/health`) do monitoringu.
+- **web** — panel: publiczny status (`/`, bez logowania) + zarządzanie za
+  hasłem lub przez Cloudflare Access (`/manage`) + `/healthz*` dla
+  zewnętrznego monitoringu.
 - **tapo_daemon.py** — długo żyjący proces obok orchestratora w tym samym
   kontenerze, trzymający jedną sesję do listwy Tapo zamiast robić kosztowny
   handshake przy każdej akcji.
+
+## Panel webowy
+
+### `/` — status publiczny, bez logowania
+
+- **Komponenty** — kafelek dla każdego elementu systemu (panel, orchestrator,
+  baza, lazymc, idle-reaper, Proxmox, Pterodactyl, sam serwer MC) + czas
+  od ostatniej aktywności.
+- **Statystyki uruchamiania/zamykania** — ostatnie 20 uruchomień i 20
+  zamknięć, rozbite na fazy z dokładnym czasem trwania każdej (kolorowy
+  pasek proporcji + dokładny czas mm:ss), licznik cooldownu Tapo na żywo.
+- Baner trybu przerwy technicznej, jeśli aktywny.
+
+### `/manage` — zarządzanie (hasło albo Cloudflare Access)
+
+```mermaid
+flowchart LR
+    req["Żądanie do /manage"] --> sess{"Sesja już\nzalogowana?"}
+    sess -->|tak| ok["Panel"]
+    sess -->|nie| cf{"Ważny token\nCloudflare Access?"}
+    cf -->|tak, zweryfikowany kryptograficznie| ok
+    cf -->|nie ma / nie przechodzi weryfikacji| login["/login.html\n(hasło z WEB_PASSWORD)"]
+    login -->|poprawne hasło| ok
+```
+
+- **Zarządzanie** — start, uśpienie samego kontenera, pełne wyłączenie
+  maszyny (z potwierdzeniem), przełącznik **trybu przerwy technicznej**.
+- **Gracze** — ostatnio widziani, obok Zarządzania w tym samym rzędzie.
+- **Polityka bezczynności** — aktualne progi obu warstw, jednym spojrzeniem.
+- **Komponenty** — jak na stronie publicznej, plus czas bezczynności.
+- **Konfiguracja** — edycja większości ustawień bez `.env`, patrz
+  [sekcja niżej](#konfiguracja-z-panelu-nadpisania-env).
+- **Statystyki uruchamiania/zamykania** — jak na stronie publicznej.
+- **Zdarzenia** — pełna historia (wake/sleep/shutdown/restart/tryb
+  serwisowy — wszystko ze znacznikiem czasu).
+- **Logi** — orchestrator, idle-reaper, Tapo (osobno, obok siebie).
+
+## Konfiguracja z panelu (nadpisania `.env`)
+
+Większość ustawień można zmienić z karty **Konfiguracja** zamiast edytować
+`.env` i restartować kontenery ręcznie. Nadpisanie trzymane jest w SQLite i
+ma pierwszeństwo przed `.env` — usunięcie nadpisania (przycisk "↺
+domyślne") wraca do wartości z `.env`/domyślnej.
+
+```mermaid
+flowchart LR
+    v["Efektywna wartość ustawienia"] --> a{"Nadpisane\nw panelu?"}
+    a -->|tak| b["z bazy SQLite"]
+    a -->|nie| c{"Ustawione\nw .env?"}
+    c -->|tak| d["z .env"]
+    c -->|nie| e["wartość domyślna"]
+```
+
+| Grupa | Ustawienia |
+|---|---|
+| Publiczny MOTD | wersja i protokół MC pokazywane na liście serwerów zanim ktoś się połączy |
+| Zachowanie lazymc | próg usypiania kontenera (selektor dni/godz/min zamiast surowych sekund), czy serwer to Forge |
+| Wiadomości MOTD | wszystkie komunikaty: śpi / budzi się / usypia / kick przy budzeniu / kick przy usypianiu / komunikat trybu przerwy technicznej |
+| Zasilanie | strategia budzenia (Tapo / WoL, dropdown), cooldown gniazdka Tapo w sekundach |
+| Model bezczynności | przełącznik jedno- / dwuwarstwowy |
+| Idle-reaper | włączony/wyłączony, próg ciszy, częstotliwość sprawdzania |
+
+Pola wpływające na `lazymc` (MOTD, próg usypiania, Forge) są oznaczone
+„wymaga restartu: lazymc” — zaczynają obowiązywać po restarcie kontenera,
+który panel robi jednym kliknięciem (patrz niżej). Reszta (strategia
+zasilania, model bezczynności, ustawienia idle-reapera) działa od razu, bez
+restartu — te usługi odczytują efektywną wartość na bieżąco, nie tylko raz
+przy starcie.
+
+**Restart lazymc z panelu** — orchestrator ma zamontowany
+`/var/run/docker.sock` i restartuje kontener `lazymc` przez Docker Engine
+API (bez `docker` CLI, bezpośrednio po HTTP do socketu), więc zmiana ustawień
+wymagających restartu to jedno kliknięcie zamiast wchodzenia na serwer.
+To realne uprawnienie nad całym hostem Dockera, nie tylko nad tym stackiem
+— jeśli wolisz tego nie mieć, wystarczy usunąć wpis z `volumes:` przy
+`orchestrator` w `docker-compose.yml` i restartować `lazymc` ręcznie
+(`docker compose restart lazymc`).
+
+## Tryb przerwy technicznej
+
+Przełącznik w karcie **Zarządzanie** — zabezpieczenie na wypadek prac
+serwisowych (np. aktualizacja na fizycznym serwerze), żeby gracz nie mógł
+przypadkowo obudzić maszyny w trakcie.
+
+```mermaid
+flowchart TB
+    join["Gracz próbuje dołączyć"] --> lockout{"Tryb przerwy\ntechnicznej?"}
+    lockout -->|włączony| kick["Natychmiastowy kick\nz własnym komunikatem — zero prób budzenia"]
+    lockout -->|wyłączony| normal["Normalny przebieg\n(budzenie jeśli śpi)"]
+    normal --> wakecall["orchestrator: POST /wake"]
+    wakecall --> guard{"Tryb przerwy\ntechnicznej?\n(sprawdzone niezależnie)"}
+    guard -->|włączony| refuse["Odmowa — Tapo/Proxmox\nnietknięte"]
+    guard -->|wyłączony| proceed["Budzenie jak zwykle"]
+```
+
+Dwie niezależne warstwy zabezpieczenia, żeby żadna pojedyncza nie musiała
+być idealna:
+
+1. **lazymc `[lockout]`** — każde dołączenie odrzucane natychmiast, zanim
+   dojdzie do jakiejkolwiek logiki budzenia/usypiania.
+2. **Twarda blokada w orchestratorze** — `POST /wake` odmawia wykonania,
+   niezależnie od tego co je wywołało (lazymc czy panel), zanim dotknie
+   Tapo/Proxmoksa.
+
+Przełączenie automatycznie restartuje `lazymc`, żeby nowy komunikat od razu
+zaczął obowiązywać — rozłącza aktualnie połączonych graczy, dlatego panel
+pyta o potwierdzenie.
+
+## Bezpieczeństwo i odporność na błędy
+
+- **Sprawdzenie graczy bezpośrednio na serwerze przed uśpieniem/wyłączeniem.**
+  `lazymc` widzi tylko graczy którzy połączyli się przez jego proxy — jeśli
+  istnieje dowolna inna droga do prawdziwego serwera (np. bezpośrednie
+  połączenie zapasowe), orchestrator i tak sprawdza żywy stan wprost na
+  serwerze (status-ping) tuż przed każdym usypianiem/wyłączeniem —
+  automatycznym i ręcznym z panelu. Jeśli ktokolwiek jest online, operacja
+  jest odrzucana i zapisywana jako zdarzenie `sleep_aborted`.
+- **Awaria Unraida nie może "zablokować" serwera w złym stanie.** Zarówno
+  budzenie jak i usypianie idą przez orchestrator — jeśli host go hostujący
+  nie działa, żadna z tych akcji się nie wykona (nie tylko budzenie).
+  Ewentualne pomylenie stanu po stronie `lazymc` (błędnie pokaże "śpi")
+  samo się koryguje przy najbliższym udanym pingu, gdy host wróci.
+- **Cloudflare Access weryfikowany kryptograficznie**, nie po samej
+  obecności nagłówka — token jest sprawdzany przeciw kluczom publicznym
+  Cloudflare dla konkretnej aplikacji (`aud`), więc nie da się go podrobić
+  wchodząc bezpośrednio po IP:port.
+- **Statyczne assety panelu z `Cache-Control: no-store`** — bez tego
+  Cloudflare potrafi cache'ować JS/CSS na brzegu sieci i serwować starą
+  wersję po deployu, mimo świeżego kodu na serwerze.
+- **Cięcie prądu na Tapo dopiero po potwierdzeniu, że Proxmox faktycznie
+  przestał odpowiadać** (nie od razu po wysłaniu komendy shutdown) — cięcie
+  w trakcie zamykania mogłoby uszkodzić system plików.
 
 ## Technologie
 
 | Warstwa | Co i po co |
 |---|---|
-| Proxy Minecrafta | [lazymc](https://github.com/timvisee/lazymc) (Rust) — MOTD dla śpiącego serwera, wykrywanie że już działa, kick z komunikatem podczas budzenia. Kompilowany ze źródeł z jednym patchem (patrz niżej), bez innych modyfikacji. |
+| Proxy Minecrafta | [lazymc](https://github.com/timvisee/lazymc) (Rust) — MOTD dla śpiącego serwera, wykrywanie że już działa, kick z komunikatem, `[lockout]` dla trybu przerwy technicznej. Kompilowany ze źródeł z jednym patchem (patrz niżej). |
 | Backend | Node.js 20 + TypeScript, [Express](https://expressjs.com/) — orchestrator i panel webowy. |
-| Baza danych | [SQLite](https://sqlite.org/) przez [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) — last-seen (globalny + per gracz), log zdarzeń, statystyki faz uruchamiania/zamykania. Jeden plik, współdzielony wolumen Dockera. |
-| Kontrola zasilania | [python-kasa](https://github.com/python-kasa/python-kasa) (fork z obsługą TPAP, patrz niżej) — sterowanie gniazdem listwy Tapo P300 przez lokalne API, bez chmury przy każdej akcji. |
-| Kontenery | Docker + Docker Compose — cztery usługi (`lazymc`, `orchestrator`, `idle-reaper`, `web`), wieloetapowe (multi-stage) Dockerfile'e. |
-| Panel webowy | Zwykły HTML + CSS + vanilla JS (bez frameworka) — sesje przez `express-session`, jedno wspólne hasło. |
+| Baza danych | [SQLite](https://sqlite.org/) przez [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) — last-seen, log zdarzeń, statystyki faz, nadpisania ustawień z panelu. Jeden plik, współdzielony wolumen Dockera. |
+| Kontrola zasilania | [python-kasa](https://github.com/python-kasa/python-kasa) (fork z obsługą TPAP, patrz niżej) — sterowanie gniazdem listwy Tapo P300 przez lokalne API. |
+| Restart kontenerów z panelu | Docker Engine API bezpośrednio przez zamontowany `/var/run/docker.sock` — bez `docker` CLI w obrazie. |
+| Autoryzacja panelu | [`jose`](https://github.com/panva/jose) — weryfikacja podpisanych tokenów Cloudflare Access (JWKS), plus klasyczne hasło (`express-session`) jako fallback. |
+| Kontenery | Docker + Docker Compose — cztery usługi (`lazymc`, `orchestrator`, `idle-reaper`, `web`), wieloetapowe Dockerfile'e. |
+| Panel webowy | Zwykły HTML + CSS + vanilla JS (bez frameworka). |
 | Zewnętrzne API | Pterodactyl Client API (stan i sterowanie serwerem MC), Proxmox VE API (stan i wyłączanie hosta). |
-| Monitoring | `/healthz` i `/healthz/:komponent` — proste endpointy HTTP zgodne z [Uptime Kuma](https://github.com/louislam/uptime-kuma) (i każdym innym monitoringiem sprawdzającym kod HTTP). |
+| Monitoring | `/healthz` i `/healthz/:komponent` — proste endpointy HTTP zgodne z [Uptime Kuma](https://github.com/louislam/uptime-kuma). |
+
+## Jak to działa — krok po kroku
+
+### Budzenie (gracz dołącza do śpiącego serwera)
+
+```mermaid
+sequenceDiagram
+    participant P as Gracz
+    participant L as lazymc
+    participant O as orchestrator
+    participant PT as Tapo / Proxmox
+    participant W as Wings / Pterodactyl
+
+    P->>L: próba dołączenia (serwer śpi)
+    L->>O: POST /wake
+    O->>O: tryb przerwy technicznej? Proxmox już odpowiada?
+    alt szybka ścieżka — host już włączony
+        Note over O: pomija budzenie zasilania
+    else wolna ścieżka — host wyłączony
+        O->>PT: odczekaj cooldown, włącz zasilanie
+        O->>PT: odpytuj aż Proxmox odpowie
+    end
+    O->>W: sprawdź stan, wyślij sygnał start jeśli trzeba
+    O->>W: czekaj aż kontener przestanie być offline
+    O->>W: czekaj aż port gry realnie odpowie
+    O-->>L: serwer gotowy
+    L-->>P: wpuszczony
+```
+
+1. **Zlecenie** — zapisywane jako zdarzenie `wake_requested`, zaczyna się
+   nowa sesja statystyk.
+2. **Faza "zlecenie → zasilanie"** (tylko wolna ścieżka) — cooldown Tapo,
+   włączenie gniazdka (albo magic packet WoL).
+3. **Faza "boot hosta"** — odpytywanie Proxmox API aż odpowie
+   (`HOST_BOOT_TIMEOUT_SECONDS`, domyślnie 10 min).
+4. **Faza "start Wings/kontenera"** — czekanie aż Pterodactyl przestanie
+   zgłaszać `offline`.
+5. **Faza "start Minecrafta"** — odpytywanie bezpośrednio portu gry aż
+   odpowie — to realny czas bootowania Minecrafta/Forge.
+6. Zdarzenie `mc_ready` kończy sesję statystyk.
+
+### Usypianie i wyłączanie
+
+```mermaid
+sequenceDiagram
+    participant L as lazymc (sleep_after)
+    participant O as orchestrator
+    participant W as Pterodactyl
+    participant Px as Proxmox
+    participant T as Tapo
+
+    L->>O: POST /sleep
+    O->>O: ping bezpośrednio na serwer — ktoś online?
+    alt ktoś jest podłączony (dowolną drogą)
+        O-->>L: odmowa (sleep_aborted)
+    else nikt nie gra
+        O->>W: stop (świat zapisany)
+        opt model jednowarstwowy / warstwa wolna po progu ciszy
+            O->>Px: shutdown (łagodny, jak shutdown -h now)
+            O->>Px: czekaj aż host przestanie odpowiadać
+            O->>T: odetnij zasilanie
+        end
+    end
+```
+
+- **Warstwa szybka** — ostatni gracz wychodzi → po
+  `LAZYMC_SLEEP_AFTER_SECONDS` lazymc wysyła SIGTERM do `bridge/wake.sh` →
+  `POST /sleep` → orchestrator zatrzymuje tylko kontener MC. Fizyczny host
+  zostaje włączony.
+- **Warstwa wolna** — idle-reaper co `IDLE_REAPER_POLL_INTERVAL_MINUTES`
+  sprawdza czas od ostatniej aktywności; po przekroczeniu
+  `IDLE_REAPER_THRESHOLD_MINUTES` woła `POST /admin/shutdown-host` (to samo
+  wywołuje przycisk "Wyłącz cały serwer" w panelu).
 
 ## Konfiguracja zewnętrznych systemów
 
 Cały setup idzie przez `.env` (skopiuj z `.env.example`, każda zmienna ma
-tam komentarz). Poniżej rzeczy, które trzeba zrobić *poza* tym repo.
+tam komentarz) — większość da się później zmieniać z panelu (patrz
+[wyżej](#konfiguracja-z-panelu-nadpisania-env)). Poniżej rzeczy, które
+trzeba zrobić *poza* tym repo.
 
 ### Pterodactyl
 
 1. **Client API key** (nie Application API!) — zaloguj się jako zwykły
    user, kliknij avatar w prawym górnym rogu → **API Credentials** →
-   **Create New**. Bez wybierania żadnych uprawnień — Client API
-   automatycznie działa na serwerach do których masz dostęp.
+   **Create New**. Bez wybierania żadnych uprawnień.
    → `PTERODACTYL_API_KEY`
-2. **Server ID** — krótki 8-znakowy identifier z paska adresu gdy
-   wejdziesz na serwer w panelu: `https://panel.example.com/server/XXXXXXXX`.
-   Nie pełny UUID, nie numeryczny ID z bazy.
+2. **Server ID** — krótki 8-znakowy identifier z paska adresu:
+   `https://panel.example.com/server/XXXXXXXX`. Nie pełny UUID, nie
+   numeryczny ID z bazy.
    → `PTERODACTYL_SERVER_ID`
 3. `PTERODACTYL_URL` — adres panelu.
 
@@ -129,47 +365,52 @@ tam komentarz). Poniżej rzeczy, które trzeba zrobić *poza* tym repo.
 
 1. **API Token**: Datacenter → Permissions → API Tokens → Add. **Odznacz
    "Privilege Separation"**, żeby token odziedziczył pełne prawa usera
-   (inaczej trzeba osobno nadać `Sys.PowerMgmt` w Datacenter →
-   Permissions → Permissions — bez tego shutdown hosta zwróci 403).
+   (inaczej trzeba osobno nadać `Sys.PowerMgmt` — bez tego shutdown hosta
+   zwróci 403).
    → `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`
 2. `PROXMOX_HOST` — adres Proxmoksa (`https://<ip>:8006`).
-3. `PROXMOX_NODE` — nazwa node'a widoczna w lewym panelu pod
-   "Datacenter" (domyślnie bywa `pve`, ale bywa zmieniona przy instalacji).
-4. `PROXMOX_ALLOW_SELF_SIGNED=true`, jeśli (jak zwykle) Proxmox używa
-   własnego certyfikatu.
+3. `PROXMOX_NODE` — nazwa node'a widoczna w lewym panelu pod "Datacenter".
+4. `PROXMOX_ALLOW_SELF_SIGNED=true`, jeśli Proxmox używa własnego certu.
 
 ### Budzenie fizycznej maszyny — Tapo albo WoL
 
-`POWER_ON_STRATEGY=tapo` albo `wol`.
+`POWER_ON_STRATEGY=tapo` albo `wol` (edytowalne też z panelu — Konfiguracja
+→ Zasilanie).
 
-**Tapo** (zalecane jeśli sprzęt sieciowy nie wspiera WoL — patrz
-[sekcja niżej](#tapo--tpap--dlaczego-python)):
-- `TAPO_EMAIL` / `TAPO_PASSWORD` — dane logowania do konta Tapo (te same
-  co w aplikacji mobilnej).
-- `TAPO_DEVICE_IP` — IP samego urządzenia w LAN, **nie huba** Tapo
-  (H100/H200) jeśli go używasz do czegoś innego.
-- Listwa z wieloma gniazdami (P300 itp.): `TAPO_CHILD_POSITION` (numer
-  portu, zalecane — stabilne niezależnie od nazwy nadanej w appce) albo
-  `TAPO_CHILD_NAME` (dokładny alias gniazda, używany tylko jeśli
-  `TAPO_CHILD_POSITION` puste).
-- `TAPO_POWER_OFF_COOLDOWN_SECONDS` — niektóre płyty główne nie
-  wznawiają się po bardzo krótkim odcięciu prądu; to minimalny czas
-  wyłączenia zanim orchestrator z powrotem włączy gniazdko.
+**Tapo** (zalecane jeśli sprzęt sieciowy nie wspiera WoL):
+- `TAPO_EMAIL` / `TAPO_PASSWORD` — dane logowania do konta Tapo.
+- `TAPO_DEVICE_IP` — IP samego urządzenia w LAN, **nie huba** Tapo.
+- Listwa z wieloma gniazdami: `TAPO_CHILD_POSITION` (numer portu,
+  zalecane) albo `TAPO_CHILD_NAME` (dokładny alias gniazda).
+- `TAPO_POWER_OFF_COOLDOWN_SECONDS` — minimalny czas wyłączenia zanim
+  orchestrator z powrotem włączy gniazdko (edytowalne z panelu, licznik na
+  żywo widać przy Statystykach).
 
 **WoL** — wymaga karty sieciowej ze wsparciem Wake-on-LAN w Linuksie
-(sprawdź `ethtool <interfejs>`, szukaj linijki `Wake-on:`) i włączonego
-"Power On by PCI-E"/podobnego ustawienia w BIOS:
+(`ethtool <interfejs>`, szukaj `Wake-on:`) i "Power On by PCI-E" w BIOS:
 - `WOL_MAC_ADDRESS` — adres MAC karty sieciowej dedyka.
-- `WOL_TARGET_ADDRESS` — adres broadcast Twojej sieci LAN (np. dla
-  `192.168.1.0/24` to `192.168.1.255`), **nie** zwykłe IP dedyka — dedyk
-  jest wyłączony, więc unicast nie zadziała (nie ma jak rozwiązać ARP).
+- `WOL_TARGET_ADDRESS` — adres broadcast Twojej sieci LAN, **nie** zwykłe
+  IP dedyka (dedyk jest wyłączony, unicast nie zadziała).
+
+### Cloudflare Access (opcjonalnie — auto-login do panelu)
+
+Jeśli domena panelu jest już za Cloudflare Access, można pominąć hasło dla
+ruchu który przez ten Access przeszedł — weryfikowane kryptograficznie, więc
+dostęp bezpośrednio po IP:port (LAN/Tailscale) nadal poprawnie wymaga hasła:
+
+- `CF_ACCESS_TEAM_DOMAIN` — Zero Trust → Settings, postać
+  `<zespół>.cloudflareaccess.com`.
+- `CF_ACCESS_AUD` — Zero Trust → Access → Applications → (ta aplikacja) →
+  Overview → "Application Audience (AUD) Tag".
+
+Zostaw oba puste, żeby całkiem wyłączyć tę ścieżkę (samo hasło jak dotychczas).
 
 ### Sieć
 
-- Unraid (albo cokolwiek hostuje `docker compose`) i dedyk muszą być w
-  **tej samej sieci LAN** — całość zakłada zwykłe lokalne IP, bez VPN-a.
-- Port-forward na routerze domowym: `WAN:PUBLIC_PORT` → `LAN-IP-Unraida:PUBLIC_PORT`
-  — tak łączą się gracze z zewnątrz.
+- Unraid (albo cokolwiek hostuje `docker compose`) i dedyk muszą mieć
+  wspólną sieć — dziś to zwykły LAN, bez VPN-a.
+- Port-forward na routerze domowym: `WAN:PUBLIC_PORT` →
+  `LAN-IP-Unraida:PUBLIC_PORT` — tak łączą się gracze z zewnątrz.
 - Panel webowy (`WEB_PORT`) nie musi być wystawiony na zewnątrz — domyślnie
   dostępny tylko w LAN, co jest wystarczające.
 
@@ -183,46 +424,13 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Panel: `http://<lan-ip-unraida>:<WEB_PORT>` (domyślnie 8459 w naszej
-konfiguracji, 8080 domyślnie w przykładzie). Publiczny status na `/`, hasło
-do zarządzania w `WEB_PASSWORD`.
+Panel: `http://<lan-ip-unraida>:<WEB_PORT>`. Publiczny status na `/`, hasło
+do zarządzania w `WEB_PASSWORD` (albo auto-login przez Cloudflare Access,
+jeśli skonfigurowany).
 
-## Korzystanie z narzędzia
+## Monitoring zewnętrzny (Uptime Kuma i podobne)
 
-### Z perspektywy gracza
-
-Nic się nie zmienia — łączysz się pod tym samym adresem/portem co zawsze.
-Jeśli serwer śpi, zamiast normalnego wejścia dostajesz komunikat w stylu
-"serwer był wyłączony, rozpoczęto uruchamianie, spróbuj za chwilę" i widzisz
-to samo w MOTD na liście serwerów. Kolejna próba (zwykle w ciągu 10 minut,
-często szybciej jeśli fizyczny host już stał włączony) po prostu wpuszcza
-normalnie.
-
-### Panel webowy
-
-- **`/` (bez logowania)** — status: host włączony/wyłączony, stan serwera
-  MC, od jak dawna trwa bezczynność. Bezpieczne do pokazania komukolwiek.
-- **`/manage` (za hasłem z `WEB_PASSWORD`)**:
-  - **Zarządzanie** — ręczny start, uśpienie samego kontenera, albo
-    **"Wyłącz cały serwer (maszynę)"** (ta sama ścieżka co automatyczne
-    wyłączenie po 7 dniach, tylko na żądanie — z potwierdzeniem, bo to
-    nieodwracalna w danej chwili akcja).
-  - **Komponenty** — status każdego elementu systemu (lazymc,
-    orchestrator, baza, idle-reaper, Proxmox, Pterodactyl, sam serwer MC)
-    bez potrzeby dostępu do Docker socket.
-  - **Polityka bezczynności** — aktualne progi obu warstw + odliczanie do
-    następnego automatycznego wyłączenia.
-  - **Statystyki uruchamiania/zamykania** — ostatnie 20 uruchomień i 20
-    zamknięć, rozbite na fazy (patrz [niżej](#jak-to-działa--krok-po-kroku)) z
-    czasem trwania każdej.
-  - **Gracze / Zdarzenia / Logi** — historia i surowe logi orchestratora
-    oraz idle-reapera.
-
-### Monitoring zewnętrzny (Uptime Kuma i podobne)
-
-Panel wystawia proste, niewymagające logowania endpointy HTTP — dodaj je
-jako monitory typu "HTTP(s)" w Uptime Kuma (albo dowolnym innym narzędziu
-sprawdzającym kod odpowiedzi):
+Panel wystawia proste, niewymagające logowania endpointy HTTP:
 
 | Endpoint | Sprawdza |
 |---|---|
@@ -231,102 +439,36 @@ sprawdzającym kod odpowiedzi):
 | `GET /healthz/orchestrator` | orchestrator |
 | `GET /healthz/database` | SQLite |
 | `GET /healthz/lazymc` | proxy (port nasłuchuje) |
-| `GET /healthz/idle-reaper` | licznik 7-dniowy |
+| `GET /healthz/idle-reaper` | licznik warstwy wolnej |
 | `GET /healthz/proxmox` | API Proxmoksa odpowiada |
 | `GET /healthz/pterodactyl` | API Pterodactyl odpowiada |
 | `GET /healthz/mc-server` | sam serwer Minecraft odpowiada na status-ping |
 
-Każdy zwraca `200` gdy zdrowe, `503` gdy nie — standardowy kod, żadnej
-specjalnej konfiguracji po stronie Kumy.
-
-## Jak to działa — krok po kroku
-
-### Budzenie (gracz dołącza do śpiącego serwera)
-
-1. **Zlecenie** — gracz próbuje dołączyć, lazymc uruchamia
-   `bridge/wake.sh` → `POST /wake` do orchestratora. Zapisywane jako
-   zdarzenie `wake_requested`, zaczyna się nowa sesja statystyk.
-2. Orchestrator sprawdza czy Proxmox już odpowiada:
-   - **Tak (szybka ścieżka)** — pomija cały poniższy krok 3, przechodzi
-     od razu do kroku 4.
-   - **Nie (wolna ścieżka)** — **faza "zlecenie → zasilanie"**: czeka na
-     ewentualny cooldown Tapo (patrz wyżej), włącza gniazdko (albo wysyła
-     magic packet WoL).
-3. **Faza "boot hosta"** — orchestrator odpytuje Proxmox API co kilka
-   sekund aż odpowie (`HOST_BOOT_TIMEOUT_SECONDS` na to, domyślnie 10
-   min) — to czas w którym fizyczna maszyna się uruchamia, Proxmox
-   startuje, i (skonfigurowane wcześniej w Proxmoksie) automatycznie
-   odpala LXC z Dockerem/Wings.
-4. Orchestrator sprawdza stan serwera MC w Pterodactylu; jeśli nie jest
-   już `running`/`starting`, wysyła sygnał `start`.
-5. **Faza "start Wings/kontenera"** — orchestrator czeka aż Pterodactyl
-   przestanie zgłaszać `offline` (czyli Wings odebrał komendę i zaczyna
-   podnosić kontener Dockera).
-6. **Faza "start Minecrafta"** — orchestrator odpytuje bezpośrednio port
-   gry (status-ping) aż odpowie — to realny czas bootowania
-   Minecrafta/Forge wewnątrz kontenera.
-7. Serwer gotowy — `bridge/wake.sh` dostaje odpowiedź, lazymc przepuszcza
-   graczy. Zdarzenie `mc_ready` kończy sesję statystyk.
-
-### Usypianie — warstwa szybka (lazymc, częste)
-
-Ostatni gracz wychodzi → po `LAZYMC_SLEEP_AFTER_SECONDS` lazymc wysyła
-SIGTERM do `bridge/wake.sh` → `POST /sleep` → orchestrator zatrzymuje
-**tylko** kontener MC przez Pterodactyl (zapis świata). Fizyczny host
-zostaje włączony.
-
-### Wyłączanie — warstwa wolna (idle-reaper, rzadkie)
-
-1. Co `IDLE_REAPER_POLL_INTERVAL_MINUTES` idle-reaper sprawdza czas od
-   ostatniej aktywności (dowolna próba dołączenia, nie tylko udana sesja).
-2. Po przekroczeniu `IDLE_REAPER_THRESHOLD_MINUTES` woła
-   `POST /admin/shutdown-host` na orchestratorze (to samo wywołuje
-   przycisk "Wyłącz cały serwer" w panelu).
-3. **Faza "zatrzymanie MC"** — jeśli serwer nie jest już offline,
-   orchestrator go zatrzymuje przez Pterodactyl i czeka na potwierdzenie
-   (świat zapisany).
-4. Orchestrator woła Proxmox API (`shutdown`) — to zwykły, łagodny
-   shutdown OS-owy (jak `shutdown -h now`), nie twardy kill: Proxmox sam
-   najpierw gracefully zatrzymuje działające VM/CT (w tym LXC z
-   Dockerem/Wings), które z kolei gracefully zatrzymuje kontenery Dockera
-   w środku.
-5. **Faza "zamykanie hosta"** (tylko strategia Tapo) — orchestrator
-   czeka aż Proxmox faktycznie przestanie odpowiadać (nie od razu po
-   wysłaniu komendy) zanim fizycznie odetnie prąd — cięcie prądu w
-   trakcie zamykania mogłoby uszkodzić system plików.
-6. **Faza "odcięcie zasilania"** (tylko Tapo) — gniazdko na listwie
-   wyłączone. Przy WoL nic tu się nie dzieje — host zostaje w stanie
-   niskiego poboru (S5), gotowy na magic packet.
+Każdy zwraca `200` gdy zdrowe, `503` gdy nie.
 
 ## Duże modpacki (Forge) i status-ping
 
 lazymc odpytuje prawdziwy serwer bezpośrednio (status-ping) co 2 sekundy,
-żeby wykryć że już działa — niezależnie od tego czy ktoś próbuje dołączyć.
-Dwa realne problemy wyszły na to podczas testów z dużym modpackiem (ATM9,
-~300 modów) i natknięcie się na nie jest bardzo prawdopodobne przy innych
-dużych modpackach Forge:
+żeby wykryć że już działa. Dwa realne problemy wyszły na to podczas testów
+z dużym modpackiem (ATM9, ~300 modów):
 
-1. **Ikonka serwera (`server-icon.png`) w bibliotece protokołu ma limit
-   32 KB na całą odpowiedź status-ping.** Nieoptymalizowana ikonka 64×64
-   (nawet kilkanaście KB) w base64 potrafi to przebić. Napraw: podmień
-   `server-icon.png` na dysku serwera na dobrze skompresowany PNG (paleta
-   256 kolorów lub mniej, kilka KB) — jeśli masz dostęp do Pterodactyl
-   Client API, robi się to przez `files/write`. **Wymaga restartu serwera
-   MC** — Minecraft wczytuje ikonkę raz przy starcie.
-2. **Forge dorzuca listę modów (`forgeData`) do status-ping**, a
-   biblioteka protokołu której używa lazymc nie potrafi sparsować tego
-   formatu przy dużych modpackach (błąd `invalid type: map, expected a
-   string`) — to nie jest kwestia rozmiaru, sam kształt JSON-a jest inny
-   niż to co biblioteka rozumie. Do tego czasem `description`/MOTD jest w
-   formacie chat-component (obiekt) zamiast zwykłego stringa, co ten sam
-   sztywny parser też odrzuca.
+1. **Ikonka serwera (`server-icon.png`) ma limit 32 KB na całą odpowiedź
+   status-ping.** Nieoptymalizowana ikonka 64×64 w base64 potrafi to
+   przebić. Napraw: podmień ją na dobrze skompresowany PNG (paleta 256
+   kolorów lub mniej) — przez Pterodactyl Client API (`files/write`).
+   **Wymaga restartu serwera MC** — ikonka wczytywana jest raz przy starcie.
+2. **Forge dorzuca listę modów (`forgeData`) do status-ping** w formacie
+   którego biblioteka protokołu używana przez lazymc nie parsuje (błąd
+   `invalid type: map, expected a string`) — nie kwestia rozmiaru, sam
+   kształt JSON-a. Czasem `description`/MOTD jest obiektem
+   chat-component zamiast zwykłego stringa, ten sam sztywny parser to też
+   odrzuca.
 
-   Na to jest patch w `lazymc/patches/monitor.rs`, nakładany w Dockerfile
-   po `git clone` przed kompilacją: gdy ścisły dekoder zawiedzie, patch
-   ręcznie wyciąga surowy JSON, usuwa `forgeData`/`modinfo`, spłaszcza
-   obiektowe `description` do zwykłego stringa, i próbuje jeszcze raz.
-   lazymc i tak nie używa tych danych (`motd.from_server=false`), więc
-   ich wycięcie nic nie psuje — tylko pozwala sparsować resztę.
+   Patch w `lazymc/patches/monitor.rs`, nakładany w Dockerfile po
+   `git clone` przed kompilacją: gdy ścisły dekoder zawiedzie, patch ręcznie
+   wyciąga surowy JSON, usuwa `forgeData`/`modinfo`, spłaszcza obiektowe
+   `description` do stringa, próbuje jeszcze raz. lazymc i tak nie używa
+   tych danych, więc ich wycięcie nic nie psuje.
 
 ## Tapo / TPAP — dlaczego Python
 
@@ -336,77 +478,91 @@ sterownik `alx`) **nigdy nie doczekała się wsparcia WoL w Linuksie** —
 funkcja została usunięta z jądra w 2013 przez buga i nigdy oficjalnie nie
 wróciła (istnieje nieoficjalny patch DKMS, `docs/alx-wol-instrukcja.md` ma
 notatki na wypadek powrotu do tego tematu — świadomie odłożone na bok jako
-zbyt ryzykowne dla produkcyjnego hypervisora bez zawsze-dostępnego dostępu
-fizycznego).
+zbyt ryzykowne dla produkcyjnego hypervisora).
 
-Zamiennik: wtyczka/listwa **TP-Link Tapo**, sterowana programowo zamiast
-magic packetu. Tu pojawił się drugi problem: firmware 1.4.x tych urządzeń
-przeszedł na nowy protokół lokalnego API — **TPAP** (handshake
-SPAKE2+/ECDSA, krzywe eliptyczne) zamiast starszego KLAP (proste
-hashowanie). **Żadna biblioteka JavaScript/TypeScript go nie obsługuje** —
-stąd Python: [python-kasa](https://github.com/python-kasa/python-kasa) ma
-to w nieukończonym, nieoficjalnym PR
+Zamiennik: wtyczka/listwa **TP-Link Tapo**, sterowana programowo. Tu
+pojawił się drugi problem: firmware 1.4.x tych urządzeń przeszedł na nowy
+protokół lokalnego API — **TPAP** (handshake SPAKE2+/ECDSA) zamiast
+starszego KLAP. **Żadna biblioteka JavaScript/TypeScript go nie obsługuje**
+— stąd Python: [python-kasa](https://github.com/python-kasa/python-kasa)
+ma to w nieukończonym, nieoficjalnym PR
 ([python-kasa/python-kasa#1592](https://github.com/python-kasa/python-kasa/pull/1592)),
 z którego korzysta `services/common/tapo/` (fork z jednym dodatkowym
-fixem, przypięty do konkretnego commita — `requirements.txt` ma pełne
-wyjaśnienie). Gdy ten PR się zmerguje i wyjdzie w oficjalnym wydaniu,
-`requirements.txt` powinien przejść na zwykły `python-kasa[speedups]`.
+fixem, przypięty do konkretnego commita).
 
 Handshake SPAKE2+ jest zauważalnie cięższy obliczeniowo niż zwykłe
 hashowanie — dla skromnego mikrokontrolera w P300 robienie go od nowa przy
 każdej pojedynczej akcji potrafiło zapchać urządzenie tak, że przestawało
 odpowiadać na discovery. Dlatego `services/common/tapo/tapo_daemon.py` to
-**długo żyjący proces** (uruchamiany w tle obok orchestratora, patrz
-`entrypoint.sh`) trzymający jedną sesję przez całą dobę (odświeżaną
-automatycznie, albo natychmiast przy błędzie) zamiast łączyć się od zera
-za każdym razem — `tapo.ts` w Node.js gada z nim przez lokalne HTTP
-(`127.0.0.1:7101`) zamiast spawnować nowy proces Pythona na każde
-włącz/wyłącz.
+**długo żyjący proces** trzymający jedną sesję przez całą dobę zamiast
+łączyć się od zera za każdym razem — `tapo.ts` w Node.js gada z nim przez
+lokalne HTTP (`127.0.0.1:7101`). Każde połączenie/akcja jest logowane
+(`/data/logs/tapo.log`, widoczne w panelu w karcie Logi).
+
+## Znane ograniczenia i możliwe rozszerzenia
+
+- **lazymc jest pojedynczym punktem awarii dla łączności graczy.** Cały
+  ruch graczy idzie przez `lazymc` na Unraidzie — jeśli Unraid padnie albo
+  jest restartowany, nikt się nie połączy, nawet jeśli prawdziwy serwer MC
+  na dedyku dalej działa. Rozważana poprawka: przenieść tylko `lazymc`
+  (i ewentualnie `web`) na osobny, zawsze-włączony VPS, połączony z
+  Tailscale do reszty stacku — Tapo/Proxmox zostają na Unraidzie (to
+  sterowanie fizycznym sprzętem w LAN, nie da się stąd wyjąć bez tunelu z
+  powrotem). Orchestrator/idle-reaper zostają tam gdzie są.
+- **DNS SRV nie daje realnego failoveru** — klienci Minecrafta w praktyce
+  nie próbują kolejnych rekordów `SRV` przy nieudanym połączeniu
+  ([znany bug Mojanga](https://bugs.mojang.com/browse/MC-151920)), więc
+  drugi rekord jako "backup" nic by nie dał.
+- Synchronizacja `banned-ips.json` z Wings (obecnie `block_banned_ips=false`).
+- Per-fazowy (dynamiczny) komunikat MOTD dla szybkiej vs. wolnej ścieżki
+  budzenia — na razie jeden komunikat.
 
 ## Status implementacji
 
-- ✅ Tapo (TPAP, przez daemon Pythona) + Wake-on-LAN jako alternatywna
-  strategia
-- ✅ Pterodactyl (status + power start/stop)
-- ✅ Proxmox (reachability check + shutdown)
-- ✅ Dwuwarstwowa logika bezczynności + SQLite (last-seen globalny i
-  per-gracz, sesje ze statystykami faz)
-- ✅ Panel webowy: publiczny status bez logowania (`/`), zarządzanie
-  (komponenty, statystyki, gracze, zdarzenia, logi, sterowanie) za hasłem
-  (`/manage`)
-- ✅ Health-checki komponentów + endpointy `/healthz*` dla Uptime Kuma
-- ✅ Patch lazymc na duże modpacki Forge (limit rozmiaru ikonki, format
-  `forgeData`, `description` jako chat-component)
-- ⬜ Synchronizacja `banned-ips.json` z Wings (obecnie
-  `block_banned_ips=false`)
-- ⬜ Per-fazowy (dynamiczny) komunikat MOTD dla szybkiej vs. wolnej
-  ścieżki budzenia — na razie jeden komunikat zakładający "do 10 minut" w
-  obu przypadkach (nigdy nie kłamie, czasem jest zachowawczy)
+- ✅ Tapo (TPAP, przez daemon Pythona, z logowaniem) + Wake-on-LAN jako
+  alternatywna strategia
+- ✅ Pterodactyl (status + power start/stop), Proxmox (reachability +
+  shutdown)
+- ✅ Jedno- i dwuwarstwowa logika bezczynności, przełączalna z panelu
+- ✅ Panel webowy: publiczny status bez logowania, zarządzanie za hasłem
+  lub Cloudflare Access, konfiguracja bez `.env`, tryb przerwy technicznej,
+  restart lazymc jednym kliknięciem
+- ✅ Sprawdzenie graczy bezpośrednio na serwerze przed każdym
+  usypianiem/wyłączeniem (niezależne od tego, jak się połączyli)
+- ✅ Health-checki komponentów + `/healthz*` dla Uptime Kuma
+- ✅ Patch lazymc na duże modpacki Forge (limit ikonki, format `forgeData`,
+  `description` jako chat-component)
+- ⬜ Synchronizacja `banned-ips.json` z Wings
+- ⬜ Per-fazowy komunikat MOTD dla szybkiej vs. wolnej ścieżki budzenia
+- ⬜ `lazymc`/`web` na osobnym VPS (odporność na awarię Unraida)
 
 ## Struktura repo
 
 ```
-lazymc/                        # obraz Docker z lazymc + config template + bridge script + patch
-  patches/monitor.rs           # patch na duże modpacki Forge (patrz sekcja wyżej)
-  bridge/wake.sh                # server.command — most do orchestratora
+lazymc/                          # obraz Docker z lazymc + config template + bridge script + patch
+  patches/monitor.rs              # patch na duże modpacki Forge
+  bridge/wake.sh                  # server.command — most do orchestratora
+  lazymc.toml.template            # generowany przy starcie z efektywnych ustawień
 
-services/common/               # współdzielony kod TypeScript
-  src/db.ts                     # SQLite: aktywność, gracze, zdarzenia/sesje
-  src/clients/                  # Pterodactyl, Proxmox, WoL, Tapo (klient HTTP do daemona), status MC
-  tapo/                         # daemon Pythona (python-kasa fork) + requirements.txt
+services/common/                 # współdzielony kod TypeScript
+  src/db.ts                       # SQLite: aktywność, gracze, zdarzenia/sesje, ustawienia panelu
+  src/settings.ts                 # katalog ustawień panelu + rozwiązywanie panel/.env/domyślne
+  src/clients/                    # Pterodactyl, Proxmox, WoL, Tapo, Docker Engine API, status MC
+  tapo/                            # daemon Pythona (python-kasa fork) + requirements.txt
 
-services/orchestrator/         # HTTP API: /wake /sleep /admin/shutdown-host /status /components /stats /logs
-  src/wake.ts                   # ścieżka budzenia (szybka/wolna), fazy statystyk
-  src/sleep.ts                   # tier 1 — usypianie kontenera MC
-  src/hostShutdown.ts            # tier 2 — pełne wyłączenie hosta
-  src/stats.ts                   # liczenie faz z sesji zdarzeń
-  src/components.ts              # health-checki innych usług
+services/orchestrator/           # HTTP API: /wake /sleep /admin/* /config/* /status /components /stats /logs
+  src/wake.ts                     # ścieżka budzenia (szybka/wolna), fazy statystyk
+  src/sleep.ts                     # tier 1 — usypianie kontenera MC + sprawdzenie graczy bezpośrednio
+  src/hostShutdown.ts              # tier 2 — pełne wyłączenie hosta
+  src/stats.ts                     # liczenie faz z sesji zdarzeń
+  src/components.ts                # health-checki innych usług
 
-services/idle-reaper/          # niezależny proces pilnujący progu bezczynności + własny /health
+services/idle-reaper/            # niezależny proces pilnujący progu bezczynności + własny /health
 
-services/web/                  # panel webowy
-  public/                        # statyczne assety, strona publiczna (/)
-  views/manage.html              # panel zarządzania (za hasłem)
+services/web/                    # panel webowy
+  src/cfAccess.ts                  # weryfikacja tokenów Cloudflare Access
+  public/                          # statyczne assety, strona publiczna (/)
+  views/manage.html                # panel zarządzania
 ```
 
 ## Testowanie / rozwój

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { db, pterodactyl } from "@mcwake/common";
+import { config, db, logger, mcstatus, pterodactyl } from "@mcwake/common";
 import { withRetry } from "./retry.js";
 
 const PTERODACTYL_RETRY = { attempts: 8, delayMs: 20_000 };
@@ -15,6 +15,24 @@ const PTERODACTYL_RETRY = { attempts: 8, delayMs: 20_000 };
  */
 export async function runSleepFlow(sessionId: string = `sleep-${crypto.randomUUID()}`): Promise<void> {
   db.recordEvent("sleep_requested", undefined, sessionId);
+
+  // lazymc's own idle timer only sees players who connect through its own
+  // proxy — anyone reaching the real server by another route entirely (a
+  // direct backup connection, say) is invisible to it. Ping the real server
+  // directly here instead of trusting lazymc's view: it reports every
+  // connection no matter how it arrived, so this catches that gap before
+  // anything actually gets stopped.
+  const live = await mcstatus.pingMinecraft(
+    config.requireEnv("MC_SERVER_HOST"),
+    config.numberEnv("MC_SERVER_PORT", 25565)
+  );
+  if (live.online && live.playersOnline > 0) {
+    const detail = `${live.playersOnline} player(s) still connected (direct check): ${live.playerSample.join(", ")}`;
+    db.recordEvent("sleep_aborted", detail, sessionId);
+    logger.warn(`sleep refused: ${detail}`);
+    throw new Error(`refusing to sleep — ${detail}`);
+  }
+
   const state = await withRetry(() => pterodactyl.getServerState(), {
     ...PTERODACTYL_RETRY,
     label: "sleep: initial Pterodactyl state check",
