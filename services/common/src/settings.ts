@@ -139,7 +139,7 @@ export const SETTINGS_CATALOG: SettingDef[] = [
     key: "SLEEP_TRIGGERS_FULL_SHUTDOWN",
     label: "Model jednowarstwowy",
     description:
-      "Włączone: próg bezczynności lazymc (patrz \"Uśpij po bezczynności\" wyżej) od razu wyłącza CAŁY fizyczny serwer. Wyłączone: dwuwarstwowy model — lazymc usypia tylko kontener Minecrafta, a osobny idle-reaper (patrz niżej) wyłącza cały host dopiero po znacznie dłuższej ciszy.",
+      "Włączone: próg bezczynności lazymc (patrz \"Uśpij po bezczynności\" wyżej) od razu wyłącza CAŁY fizyczny serwer. Wyłączone: dwuwarstwowy model — lazymc usypia tylko kontener Minecrafta, a osobny idle-reaper (patrz niżej) wyłącza cały host dopiero po znacznie dłuższej ciszy. Uwaga: licznik lazymc żyje tylko w pamięci procesu i zeruje się przy KAŻDYM restarcie kontenera lazymc (nie tylko celowym) — nawet w tym trybie warto trzymać idle-reaper włączony z takim samym progiem jako niezależny, przeżywający restart backstop (patrz niżej).",
     group: "sleep-model",
     type: "boolean",
     fallback: "false",
@@ -148,7 +148,7 @@ export const SETTINGS_CATALOG: SettingDef[] = [
     key: "IDLE_REAPER_ENABLED",
     label: "Idle-reaper włączony",
     description:
-      "Druga warstwa usypiania — niezależnie wyłącza cały host po długiej ciszy. Ma sens tylko przy wyłączonym modelu jednowarstwowym powyżej; jeśli ten jest włączony, idle-reaper i tak nic nie robi.",
+      "Niezależnie wyłącza cały host po długiej ciszy, licząc od trwałego (w SQLite, przeżywającego restart) znacznika ostatniej aktywności — nie od licznika lazymc, który żyje tylko w pamięci i zeruje się przy każdym jego restarcie. Wartościowe jako backstop nawet przy włączonym modelu jednowarstwowym powyżej — wtedy ustaw próg niżej na tę samą wartość co próg lazymc.",
     group: "idle-reaper",
     type: "boolean",
     fallback: "true",
@@ -156,7 +156,8 @@ export const SETTINGS_CATALOG: SettingDef[] = [
   {
     key: "IDLE_REAPER_THRESHOLD_MINUTES",
     label: "Próg bezczynności (minuty)",
-    description: "Po ilu minutach całkowitej ciszy (od ostatniej aktywności gracza) idle-reaper wyłącza cały host.",
+    description:
+      "Po ilu minutach całkowitej ciszy (od ostatniej realnej aktywności gracza, śledzonej niezależnie od lazymc) idle-reaper wyłącza cały host. W modelu jednowarstwowym ustaw na tę samą wartość co próg usypiania lazymc powyżej (w minutach zamiast sekund), żeby idle-reaper był wiarygodnym backstopem, nie osobnym, niezsynchronizowanym progiem.",
     group: "idle-reaper",
     type: "number",
     fallback: "10080",

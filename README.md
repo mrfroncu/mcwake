@@ -51,7 +51,13 @@ Two idle models, switchable with one toggle in the panel
      server through Proxmox.
 - **Single-tier** — `lazymc`'s own threshold (set to your real target, e.g.
   ~7 days) shuts down the whole host directly instead of just sleeping the
-  container; `idle-reaper` becomes redundant in this mode.
+  container. Keep `idle-reaper` **enabled** even here, with a matching
+  threshold — `lazymc`'s own timer lives only in that process's memory and
+  resets to zero on any restart of the `lazymc` container (a redeploy, a
+  crash, a host reboot — not just a deliberate one), silently keeping the
+  machine on far longer than intended. `idle-reaper` reads a persistent,
+  SQLite-backed last-activity timestamp instead, so it survives `lazymc`
+  restarts and acts as the real backstop.
 
 Waking the physical machine goes through a **TP-Link Tapo smart plug**
 controlled in software (Wake-on-LAN was the original plan, but the network
