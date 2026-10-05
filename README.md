@@ -447,6 +447,28 @@ Panel: `http://<unraid-lan-ip>:<WEB_PORT>`. Public status at `/`, the
 management password is `WEB_PASSWORD` (or auto-login via Cloudflare
 Access, if configured).
 
+`docker compose up` above starts orchestrator, idle-reaper and web only —
+lazymc is expected on a separate VPS (next section). To run everything on
+one host instead, add `--profile local-lazymc`.
+
+### lazymc on a separate VPS
+
+Player sessions are proxied by lazymc straight to the real server, so with
+lazymc on an always-on VPS they survive a restart of the home server; only
+waking/sleeping needs the orchestrator, reached over Tailscale.
+
+- **VPS**: `docker-compose.vps.yml` (lazymc alone, container name
+  `mcwake-lazymc`), e.g. as an Arcane GitOps project syncing this repo. Its
+  own `.env` needs `PUBLIC_PORT`, `MC_SERVER_HOST`/`MC_SERVER_PORT` (the
+  server's public address — a DDNS hostname is fine, lazymc restarts itself
+  when it resolves to a new IP), `ORCHESTRATOR_URL=http://<home Tailscale
+  IP>:7100`, `ORCHESTRATOR_INTERNAL_TOKEN`, and the `LAZYMC_*`/`PUBLIC_MOTD_*`
+  values as a fallback for when the orchestrator is unreachable.
+- **Home server** `.env`: `ORCHESTRATOR_BIND_ADDRESS=<home Tailscale IP>`,
+  `LAZYMC_HOST=<VPS Tailscale IP>` (health check), and `ARCANE_URL` /
+  `ARCANE_API_KEY` so the panel's "restart lazymc" goes through Arcane's
+  API instead of the local docker.sock.
+
 ## External monitoring (Uptime Kuma and similar)
 
 The panel exposes plain, no-login-required HTTP endpoints:
@@ -525,13 +547,9 @@ one session for a full day instead of reconnecting from zero every time —
 ## Known limitations and possible extensions
 
 - **lazymc is a single point of failure for player connectivity.** All
-  player traffic goes through `lazymc` on Unraid — if Unraid goes down or
-  is being restarted, nobody can connect, even if the real MC server on
-  the dedicated box is still running fine. A considered fix: move just
-  `lazymc` (and possibly `web`) to a separate, always-on VPS, connected to
-  the rest of the stack via Tailscale — Tapo/Proxmox stay on Unraid (that's
-  physical LAN hardware control, can't be moved out without a tunnel back
-  in anyway). The orchestrator/idle-reaper stay where they are.
+  player traffic goes through `lazymc` — now on a separate VPS (see
+  [Installation](#installation)), so a home-server restart no longer cuts
+  players off, but a VPS outage still does.
 - **DNS SRV doesn't provide real failover** — Minecraft clients in
   practice don't retry other `SRV` records on a failed connection (a
   [known Mojang bug](https://bugs.mojang.com/browse/MC-151920)), so a
