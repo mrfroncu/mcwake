@@ -1,5 +1,9 @@
 services:
+  # Only started with `--profile local-lazymc` — lazymc normally runs on a
+  # separate VPS (docker-compose.vps.yml) so player sessions survive a
+  # restart of this host. Use this profile to run everything on one box.
   lazymc:
+    profiles: ["local-lazymc"]
     build:
       context: .
       dockerfile: lazymc/Dockerfile
@@ -20,10 +24,17 @@ services:
     env_file: .env
     environment:
       - LOG_FILE=/data/logs/orchestrator.log
+    ports:
+      # Reached from outside this Docker host by lazymc on the VPS and by the
+      # dashboard — bind it to this host's Tailscale IP via
+      # ORCHESTRATOR_BIND_ADDRESS in .env (localhost-only if unset).
+      - "${ORCHESTRATOR_BIND_ADDRESS:-127.0.0.1}:${ORCHESTRATOR_PORT:-7100}:${ORCHESTRATOR_PORT:-7100}"
     volumes:
       - mcwake-data:/data
       # Lets the panel's "restart lazymc" button (Konfiguracja section) apply
-      # settings that lazymc only re-reads at container start. This grants
+      # settings that lazymc only re-reads at container start — only used
+      # with the local-lazymc profile; with ARCANE_URL set the restart goes
+      # through Arcane's API instead and this can be removed. This grants
       # full control over every container on this Docker host, not just
       # mcwake's own — comment this line out if you'd rather apply those
       # settings manually via `docker compose restart lazymc` instead.

@@ -40,7 +40,10 @@ async function checkDatabase(): Promise<ComponentStatus> {
 }
 
 async function checkLazymc(): Promise<ComponentStatus> {
-  const healthy = await tcpOpen("lazymc", config.numberEnv("PUBLIC_PORT", 25565));
+  // LAZYMC_HOST: where lazymc's public port is reachable from here — the
+  // compose service name when it runs alongside us, or e.g. the VPS's
+  // Tailscale IP when it runs on another host.
+  const healthy = await tcpOpen(config.optionalEnv("LAZYMC_HOST", "lazymc"), config.numberEnv("PUBLIC_PORT", 25565));
   return { healthy };
 }
 

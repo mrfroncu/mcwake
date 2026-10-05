@@ -1,0 +1,25 @@
+# lazymc alone, for a separate VPS — the rest of the stack (orchestrator,
+# idle-reaper, web) stays on the home server in docker-compose.yml. Player
+# sessions are proxied VPS -> real MC server directly, so they survive a
+# restart of the home server; only waking/sleeping needs the orchestrator,
+# reached over Tailscale.
+#
+# Deployed through Arcane GitOps (whole repo synced into the project dir).
+# The project's .env lives only on the VPS, next to this file, and needs:
+#   PUBLIC_PORT, MC_SERVER_HOST, MC_SERVER_PORT,
+#   ORCHESTRATOR_URL (http://<home Tailscale IP>:7100),
+#   ORCHESTRATOR_INTERNAL_TOKEN,
+#   plus the LAZYMC_* / PUBLIC_MOTD_* values as a fallback for when the
+#   orchestrator is unreachable at container start.
+services:
+  lazymc:
+    build:
+      context: .
+      dockerfile: lazymc/Dockerfile
+    # Fixed name — the orchestrator restarts it by this name via Arcane's API
+    # (ARCANE_LAZYMC_CONTAINER).
+    container_name: mcwake-lazymc
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PUBLIC_PORT:-25565}:${PUBLIC_PORT:-25565}"

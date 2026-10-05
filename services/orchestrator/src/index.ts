@@ -1,5 +1,5 @@
 import express from "express";
-import { config, db, docker, logger, pterodactyl, proxmox, settings } from "@mcwake/common";
+import { arcane, config, db, docker, logger, pterodactyl, proxmox, settings } from "@mcwake/common";
 import { runWakeFlow } from "./wake.js";
 import { runSleepFlow } from "./sleep.js";
 import { runHostShutdownFlow } from "./hostShutdown.js";
@@ -103,10 +103,19 @@ app.post("/config/settings", (req, res) => {
   }
 });
 
+// lazymc runs either next to us (restart via the mounted docker.sock) or on
+// another host managed by Arcane (ARCANE_URL set — restart via its API).
+async function restartLazymc(): Promise<void> {
+  if (arcane.isConfigured()) {
+    await arcane.restartContainer(config.optionalEnv("ARCANE_LAZYMC_CONTAINER", "mcwake-lazymc"));
+  } else {
+    await docker.restartComposeService("lazymc");
+  }
+}
+
 // Applies settings that lazymc only re-reads at container start, by
-// restarting it via the Docker Engine API over the mounted docker.sock.
-// Whitelisted to lazymc only — this is not a general "restart anything"
-// endpoint.
+// restarting it (see restartLazymc). Whitelisted to lazymc only — this is
+// not a general "restart anything" endpoint.
 const RESTARTABLE_SERVICES = new Set(["lazymc"]);
 app.post("/admin/restart/:service", async (req, res) => {
   const service = req.params.service;
@@ -115,7 +124,7 @@ app.post("/admin/restart/:service", async (req, res) => {
     return;
   }
   try {
-    await docker.restartComposeService(service);
+    await restartLazymc();
     db.recordEvent("container_restarted", service);
     res.json({ ok: true });
   } catch (err) {
@@ -137,7 +146,7 @@ app.post("/admin/maintenance", async (req, res) => {
   db.setSetting("LAZYMC_LOCKOUT_ENABLED", enabled ? "true" : "false");
   db.recordEvent(enabled ? "maintenance_mode_enabled" : "maintenance_mode_disabled");
   try {
-    await docker.restartComposeService("lazymc");
+    await restartLazymc();
     res.json({ ok: true, enabled });
   } catch (err) {
     logger.error("maintenance mode toggle: lazymc restart failed", err);

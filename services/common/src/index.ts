@@ -8,4 +8,5 @@ export * as proxmox from "./clients/proxmox.js";
 export * as wol from "./clients/wol.js";
 export * as tapo from "./clients/tapo.js";
 export * as docker from "./clients/docker.js";
+export * as arcane from "./clients/arcane.js";
 export * as mcstatus from "./clients/mcstatus.js";
