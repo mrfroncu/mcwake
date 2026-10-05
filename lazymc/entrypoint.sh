@@ -56,4 +56,33 @@ export PUBLIC_PORT PUBLIC_MOTD_VERSION PUBLIC_MOTD_PROTOCOL MC_SERVER_HOST MC_SE
 mkdir -p /lazymc/serverdir
 envsubst < /lazymc/lazymc.toml.template > /lazymc/lazymc.toml
 
-exec lazymc --config /lazymc/lazymc.toml start
+lazymc --config /lazymc/lazymc.toml start &
+LAZYMC_PID=$!
+
+# lazymc resolves MC_SERVER_HOST only once, at startup. When it's a hostname
+# pointing at a dynamic home IP (DDNS), a changed IP would leave lazymc
+# proxying to the old address forever — so watch it and exit when it moves,
+# letting Docker's restart policy bring lazymc back up with the new IP. An IP
+# change drops every open connection anyway, so nothing is lost by this.
+resolve_mc_host() {
+  getent ahostsv4 "$MC_SERVER_HOST" 2>/dev/null | awk 'NR==1 { print $1 }'
+}
+if ! printf '%s' "$MC_SERVER_HOST" | grep -Eq '^[0-9.]+$'; then
+  initial_ip=$(resolve_mc_host)
+  if [ -n "$initial_ip" ]; then
+    (
+      while sleep "${MC_SERVER_DNS_CHECK_SECONDS:-60}"; do
+        current_ip=$(resolve_mc_host)
+        if [ -n "$current_ip" ] && [ "$current_ip" != "$initial_ip" ]; then
+          echo "[entrypoint] $MC_SERVER_HOST moved $initial_ip -> $current_ip, restarting lazymc" >&2
+          # SIGKILL, not SIGTERM: lazymc must not run its own stop logic
+          # (bridge -> orchestrator /sleep) just because the IP changed.
+          kill -KILL "$LAZYMC_PID"
+          exit 0
+        fi
+      done
+    ) &
+  fi
+fi
+
+wait "$LAZYMC_PID"
