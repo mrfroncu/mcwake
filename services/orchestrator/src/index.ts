@@ -2,7 +2,7 @@ import express from "express";
 import { arcane, config, db, docker, logger, pterodactyl, proxmox, settings } from "@mcwake/common";
 import { runWakeFlow } from "./wake.js";
 import { runSleepFlow } from "./sleep.js";
-import { runHostShutdownFlow } from "./hostShutdown.js";
+import { runHostShutdownFlow, hostShutdownInProgress } from "./hostShutdown.js";
 import { startActivityPoller } from "./activity.js";
 import { getComponentsReport } from "./components.js";
 import { getShutdownStats, getWakeStats } from "./stats.js";
@@ -55,14 +55,18 @@ app.post("/sleep", async (_req, res) => {
   }
 });
 
-app.post("/admin/shutdown-host", async (_req, res) => {
-  try {
-    await runHostShutdownFlow();
-    res.json({ ok: true });
-  } catch (err) {
-    logger.error("host shutdown flow failed", err);
-    res.status(500).json({ ok: false, error: String(err) });
+// Fire the cascade and answer straight away, the same way /sleep does for its
+// full-shutdown branch. Waiting for it to finish was the old behaviour and it
+// could not work: stopping a modded server takes minutes, and a hung one now
+// gets a ten-minute grace period before being killed, so the request died at
+// Cloudflare's 100-second ceiling with a 524 long before the host went down.
+// Progress belongs in the events feed, which the panel already polls.
+app.post("/admin/shutdown-host", (_req, res) => {
+  const already = hostShutdownInProgress();
+  if (!already) {
+    runHostShutdownFlow().catch((err) => logger.error("host shutdown flow failed", err));
   }
+  res.json({ ok: true, mode: already ? "already-running" : "started" });
 });
 
 // Panel-configurable settings: DB override, falling back to .env. Full

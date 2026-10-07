@@ -154,7 +154,16 @@ document.getElementById("shutdown-host-btn").addEventListener("click", async () 
   setManageMsg("Zatrzymywanie serwera i wyłączanie maszyny...");
   const res = await fetch("/api/manage/shutdown-host", { method: "POST" });
   const data = await res.json();
-  setManageMsg(data.ok ? "Serwer wyłączony." : `Błąd: ${data.error}`);
+  // The cascade runs in the background now, so this answer means "accepted",
+  // not "finished" — saying "Serwer wyłączony." here would be a lie told
+  // several minutes early. Progress shows up in Zdarzenia.
+  setManageMsg(
+    !data.ok
+      ? `Błąd: ${data.error}`
+      : data.mode === "already-running"
+        ? "Wyłączanie już trwa — postęp w zakładce Zdarzenia."
+        : "Wyłączanie uruchomione. Potrafi potrwać kilkanaście minut (zawieszony serwer jest ubijany po czasie z ustawień) — postęp w zakładce Zdarzenia."
+  );
   loadActivity();
   renderComponentsGrid(document.getElementById("components-grid"));
 });

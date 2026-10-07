@@ -145,6 +145,24 @@ export const SETTINGS_CATALOG: SettingDef[] = [
     fallback: "false",
   },
   {
+    key: "MC_STOP_GRACE_MINUTES",
+    label: "Czas na zamknięcie serwera (minuty)",
+    description:
+      "Ile czasu serwer Minecraft dostaje na samodzielne, czyste zamknięcie po sygnale stop. Modowane paczki potrafią zawisnąć na zamykaniu (zablokowany wątek backupu, mod który nie oddaje sterowania) i wtedy stoją w stanie \"stopping\" bez końca. Po przekroczeniu tego czasu orchestrator wysyła kill i kontynuuje resztę procedury, zamiast przerywać całe wyłączanie hosta przez jeden zawieszony wątek. Uwaga: kill nie zapisuje świata, więc nie ustawiaj zbyt krótko — czyste zamknięcie dużej paczki potrafi trwać kilka minut.",
+    group: "sleep-model",
+    type: "number",
+    fallback: "10",
+  },
+  {
+    key: "MC_KILL_WAIT_SECONDS",
+    label: "Czas na reakcję po kill (sekundy)",
+    description:
+      "Po wysłaniu kill orchestrator czeka tyle sekund na stan \"offline\". Jeśli nawet kill nie pomoże, procedura przerywa się z błędem zamiast wyłączać host pod działającym kontenerem — to już awaria po stronie Wings, nie zawieszony mod.",
+    group: "sleep-model",
+    type: "number",
+    fallback: "90",
+  },
+  {
     key: "IDLE_REAPER_ENABLED",
     label: "Idle-reaper włączony",
     description:

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { config, db, logger, mcstatus, pterodactyl } from "@mcwake/common";
+import { config, db, logger, mcstatus, pterodactyl, settings } from "@mcwake/common";
 import { withRetry } from "./retry.js";
 
 const PTERODACTYL_RETRY = { attempts: 8, delayMs: 20_000 };
@@ -43,18 +43,61 @@ export async function runSleepFlow(sessionId: string = `sleep-${crypto.randomUUI
       label: "sleep: send stop signal",
     });
   }
-  await waitUntilOffline();
+  await waitUntilOffline(sessionId);
   db.recordEvent("mc_stopped", undefined, sessionId);
 }
 
-async function waitUntilOffline(): Promise<void> {
-  const deadline = Date.now() + 180_000;
+/**
+ * Wait for Pterodactyl to report 'offline', escalating to `kill` if the
+ * server will not go down on its own.
+ *
+ * A heavily modded server can hang on shutdown indefinitely — a stuck backup
+ * thread, a mod that never returns from its unload hook — and Pterodactyl then
+ * reports 'stopping' forever. This used to time out after three minutes and
+ * throw, which aborted the whole flow: the caller (hostShutdown) never reached
+ * the Proxmox shutdown, so the machine stayed powered on and the panel request
+ * hung until Cloudflare cut it with a 524.
+ *
+ * So the timeout now escalates instead of giving up. `kill` is SIGKILL on the
+ * container, which does NOT save the world — hence the generous grace period
+ * before it, and hence the fact that this is only ever reached when the server
+ * has already refused to close cleanly.
+ */
+async function waitUntilOffline(sessionId: string): Promise<void> {
+  const graceMinutes = settings.getEffectiveNumber("MC_STOP_GRACE_MINUTES");
+  if (await pollUntilOffline(graceMinutes * 60_000)) return;
+
+  const detail = `server still not 'offline' ${graceMinutes} min after stop — escalating to kill`;
+  logger.warn(`sleep: ${detail}`);
+  db.recordEvent("mc_stop_timed_out", detail, sessionId);
+
+  await withRetry(() => pterodactyl.sendPowerSignal("kill"), {
+    ...PTERODACTYL_RETRY,
+    label: "sleep: send kill signal",
+  });
+
+  const killWaitSeconds = settings.getEffectiveNumber("MC_KILL_WAIT_SECONDS");
+  if (await pollUntilOffline(killWaitSeconds * 1000)) {
+    db.recordEvent("mc_killed", `world was NOT saved — stop had hung for ${graceMinutes} min`, sessionId);
+    logger.warn("sleep: server killed after refusing to stop cleanly");
+    return;
+  }
+
+  // Even a kill left it running. Refuse to continue: powering off the host
+  // underneath a live container is how worlds get corrupted, and whatever is
+  // wrong here is on the Wings side rather than a stuck mod.
+  throw new Error(`Minecraft server still not 'offline' ${killWaitSeconds}s after kill`);
+}
+
+/** Polls until 'offline' or the window runs out. True = reached offline. */
+async function pollUntilOffline(windowMs: number): Promise<boolean> {
+  const deadline = Date.now() + windowMs;
   while (Date.now() < deadline) {
     // Tolerate transient Pterodactyl errors here too — just keep polling
     // instead of aborting the whole wait on one bad response.
     const state = await pterodactyl.getServerState().catch(() => null);
-    if (state === "offline") return;
+    if (state === "offline") return true;
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  throw new Error("Timed out waiting for Minecraft server to reach 'offline'");
+  return false;
 }

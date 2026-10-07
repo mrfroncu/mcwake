@@ -9,8 +9,29 @@ import { runSleepFlow } from "./sleep.js";
  * Proxmox. Idempotent — safe to call when the host is already off.
  *
  * Every event shares one `shutdown-<uuid>` session id (see stats.ts).
+ *
+ * Only one run at a time. The flow can now last well over ten minutes (a
+ * hung server gets a long grace period before it is killed), and callers no
+ * longer wait for it to finish, so a second click on the panel button would
+ * otherwise start a parallel cascade — two Proxmox shutdowns and, worse, two
+ * Tapo power cuts racing each other around the same machine.
  */
-export async function runHostShutdownFlow(): Promise<void> {
+let inFlight: Promise<void> | null = null;
+
+export function runHostShutdownFlow(): Promise<void> {
+  if (inFlight) return inFlight;
+  inFlight = runHostShutdownFlowOnce().finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+/** True while a shutdown cascade is still running, for the panel to show. */
+export function hostShutdownInProgress(): boolean {
+  return inFlight !== null;
+}
+
+async function runHostShutdownFlowOnce(): Promise<void> {
   const sessionId = `shutdown-${crypto.randomUUID()}`;
 
   const hostUp = await proxmox.isReachable();
