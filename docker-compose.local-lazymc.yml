@@ -1,0 +1,12 @@
+# Only for lazymc running on this same Docker host (profile local-lazymc).
+#
+# Mounts the Docker socket into the orchestrator so the panel's
+# "restart lazymc" button can apply settings lazymc only reads at start.
+# The socket is full control over every container on this host - which is why
+# it lives in its own file and is not part of the default stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local-lazymc.yml --profile local-lazymc up -d
+services:
+  orchestrator:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

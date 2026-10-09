@@ -9,8 +9,31 @@ import { requireEnv, optionalEnv } from "../config.js";
  * addresses or keys ever live in the repo.
  */
 
+/** Whether the full Arcane API is configured. The webhook is checked separately. */
 export function isConfigured(): boolean {
   return Boolean(process.env.ARCANE_URL && process.env.ARCANE_API_KEY);
+}
+
+/**
+ * Restarts lazymc through a single-purpose Arcane webhook, when one is set.
+ *
+ * This is the preferred way, and the reason it exists is the size of the
+ * alternative. An Arcane API key is a credential for the whole manager -
+ * creating containers, exec, deploying compose stacks, on every host Arcane
+ * runs - so a key kept here only to restart one container made this service
+ * root on every one of those hosts. A webhook token can do exactly one thing:
+ * the action it was created for, on the target it was created for (here:
+ * restart the mcwake-lazymc project). The token travels in the URL, so the URL
+ * is the secret.
+ */
+export async function triggerLazymcWebhook(): Promise<boolean> {
+  const url = optionalEnv("ARCANE_LAZYMC_WEBHOOK_URL", "");
+  if (!url) return false;
+  const res = await fetch(url, { method: "POST", signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) {
+    throw new Error(`arcane webhook: restart lazymc failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  }
+  return true;
 }
 
 /** Restarts a container by name or ID in the configured Arcane environment. */
