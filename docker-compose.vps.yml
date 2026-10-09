@@ -16,8 +16,8 @@ services:
     build:
       context: .
       dockerfile: lazymc/Dockerfile
-    # Fixed name — the orchestrator restarts it by this name via Arcane's API
-    # (ARCANE_LAZYMC_CONTAINER).
+    # Fixed project and container name - the Arcane webhook that restarts it
+    # targets the mcwake-lazymc project (ARCANE_LAZYMC_WEBHOOK_URL).
     container_name: mcwake-lazymc
     restart: unless-stopped
     env_file: .env

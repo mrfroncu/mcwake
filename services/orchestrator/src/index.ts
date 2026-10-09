@@ -107,14 +107,12 @@ app.post("/config/settings", (req, res) => {
   }
 });
 
-// lazymc runs either next to us (restart via the mounted docker.sock) or on
-// another host managed by Arcane. There, a single-purpose webhook is used when
-// configured (ARCANE_LAZYMC_WEBHOOK_URL) and the full API only as a fallback -
-// see triggerLazymcWebhook for why the difference matters.
+// lazymc runs either next to us (restart via the docker socket, mounted only
+// with docker-compose.local-lazymc.yml) or on a VPS managed by Arcane, where a
+// single-purpose webhook restarts it - see clients/arcane.ts.
 async function restartLazymc(): Promise<void> {
-  if (await arcane.triggerLazymcWebhook()) return;
   if (arcane.isConfigured()) {
-    await arcane.restartContainer(config.optionalEnv("ARCANE_LAZYMC_CONTAINER", "mcwake-lazymc"));
+    await arcane.triggerLazymcWebhook();
   } else {
     await docker.restartComposeService("lazymc");
   }

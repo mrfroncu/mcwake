@@ -465,9 +465,13 @@ waking/sleeping needs the orchestrator, reached over Tailscale.
   IP>:7100`, `ORCHESTRATOR_INTERNAL_TOKEN`, and the `LAZYMC_*`/`PUBLIC_MOTD_*`
   values as a fallback for when the orchestrator is unreachable.
 - **Home server** `.env`: `ORCHESTRATOR_BIND_ADDRESS=<home Tailscale IP>`,
-  `LAZYMC_HOST=<VPS Tailscale IP>` (health check), and `ARCANE_URL` /
-  `ARCANE_API_KEY` so the panel's "restart lazymc" goes through Arcane's
-  API instead of the local docker.sock.
+  `LAZYMC_HOST=<VPS Tailscale IP>` (health check), and
+  `ARCANE_LAZYMC_WEBHOOK_URL` so the panel's "restart lazymc" goes through
+  an Arcane webhook. Create it in Arcane with target type *project*
+  (`mcwake-lazymc`, which stays stable when the container is recreated) and
+  action *restart*. Do not give mcwake an Arcane API key: a key is a
+  credential for the whole manager on every host it runs, a webhook token
+  can restart that one project and nothing else.
 
 ## External monitoring (Uptime Kuma and similar)
 
