@@ -16,6 +16,9 @@ services:
     build:
       context: .
       dockerfile: lazymc/Dockerfile
+      # Arcane rebuilds on every deploy; this makes it fetch the current
+      # debian:bookworm-slim first instead of reusing a weeks-old local copy.
+      pull: true
     # Fixed project and container name - the Arcane webhook that restarts it
     # targets the mcwake-lazymc project (ARCANE_LAZYMC_WEBHOOK_URL).
     container_name: mcwake-lazymc

@@ -14,7 +14,10 @@ COPY lazymc/patches/monitor.rs src/monitor.rs
 RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Debian publishes security fixes weeks before the next bookworm-slim image,
+# so upgrade the base packages here rather than wait for it.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     ca-certificates curl gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
