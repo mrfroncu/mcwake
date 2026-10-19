@@ -1,5 +1,5 @@
 import express from "express";
-import { arcane, config, db, docker, logger, pterodactyl, proxmox, settings } from "@mcwake/common";
+import { arcane, config, db, docker, host, logger, pterodactyl, settings } from "@mcwake/common";
 import { runWakeFlow } from "./wake.js";
 import { runSleepFlow } from "./sleep.js";
 import { runHostShutdownFlow, hostShutdownInProgress } from "./hostShutdown.js";
@@ -186,7 +186,7 @@ app.get("/stats", (req, res) => {
   });
 });
 
-// Fast, SQLite-only — deliberately has no dependency on Proxmox/Pterodactyl
+// Fast, SQLite-only — deliberately has no dependency on host/Pterodactyl
 // reachability, so a slow/unreachable host never blocks this from loading.
 app.get("/activity", (_req, res) => {
   const cooldownMs = settings.getEffectiveNumber("TAPO_POWER_OFF_COOLDOWN_SECONDS") * 1000;
@@ -207,7 +207,7 @@ app.get("/activity", (_req, res) => {
 
 app.get("/status", async (_req, res) => {
   const [hostUp, mcState] = await Promise.all([
-    proxmox.isReachable(),
+    host.isReachable(),
     pterodactyl.getServerState().catch(() => "unknown" as const),
   ]);
   res.json({

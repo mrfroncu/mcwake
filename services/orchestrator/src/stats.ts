@@ -17,7 +17,7 @@ export interface WakeSessionStats {
   phases: {
     /** User's join attempt -> WoL packet sent / Tapo plug switched on (slow path only). */
     requestToPowerOn: number | null;
-    /** Power applied -> Proxmox answering again (slow path only). */
+    /** Power applied -> host control API (Proxmox or Wings) answering again (slow path only). */
     hostBoot: number | null;
     /** Pterodactyl start signal -> Wings/Docker container leaves "offline". */
     wingsContainerStart: number | null;
@@ -61,7 +61,7 @@ export interface ShutdownSessionStats {
   phases: {
     /** Stop signal sent to Pterodactyl -> server confirmed offline (world saved). */
     mcStop: number | null;
-    /** Proxmox shutdown requested -> host actually stops answering. */
+    /** Host shutdown requested -> host actually stops answering. */
     hostShutdown: number | null;
     /** Tapo plug switched off (Tapo strategy only). */
     tapoPowerCut: number | null;

@@ -377,6 +377,29 @@ needs doing *outside* this repo.
    → `PTERODACTYL_SERVER_ID`
 3. `PTERODACTYL_URL` — the panel's address.
 
+### The host's control plane — Proxmox or bare metal
+
+`HOST_BACKEND` says what answers for the dedicated box:
+
+- `proxmox` (default) — Wings runs in a VM. The host counts as up once the
+  Proxmox API answers, and it is shut down through that API (below).
+- `wings` — Wings runs straight on the machine, no hypervisor. The host
+  counts as up once Wings answers on `WINGS_URL` (a 401 is fine — it proves
+  the daemon is serving, which is also the moment Pterodactyl can start the
+  server). It is shut down over SSH with a dedicated key that can do
+  nothing but power off:
+  1. `ssh-keygen -t ed25519 -N "" -f id_ed25519` and put both files in the
+     `mcwake-data` volume under `ssh/` (`HOST_SSH_KEY`), plus the host's
+     key in `ssh/known_hosts` (`HOST_SSH_KNOWN_HOSTS`) — an unknown host
+     key fails instead of being trusted.
+  2. On the host, one line in `/root/.ssh/authorized_keys`:
+     `restrict,command="/usr/bin/systemctl poweroff",from="<orchestrator IP>" ssh-ed25519 AAAA... mcwake-poweroff`
+  3. `HOST_SSH_TARGET=root@<host>`; let the orchestrator's address reach
+     Wings' port through the host firewall.
+
+The `/healthz/proxmox` check and its panel tile follow whichever backend
+is set; the name stays so existing monitors keep working.
+
 ### Proxmox
 
 1. **API Token**: Datacenter → Permissions → API Tokens → Add. **Uncheck
@@ -409,6 +432,15 @@ PCI-E" (or similar) enabled in the BIOS:
 - `WOL_MAC_ADDRESS` — the dedicated box's network card MAC address.
 - `WOL_TARGET_ADDRESS` — your LAN's broadcast address, **not** the box's
   plain IP (it's off, so unicast can't work — there's no way to resolve ARP).
+- The orchestrator needs a leg on the LAN to send it: from Docker's default
+  bridge, a packet to the LAN broadcast address is delivered to the Docker
+  host itself and never leaves it. `docker-compose.lan-wol.yml` attaches
+  the orchestrator to an existing ipvlan/macvlan network (`br0` on Unraid)
+  at a fixed `WOL_LAN_ADDRESS`, while the default route stays on the
+  bridge. Enable it with
+  `COMPOSE_FILE=docker-compose.yml:docker-compose.lan-wol.yml` in `.env`.
+- With WoL, keep the box's power on at the socket: the network card listens
+  for the packet on standby power.
 
 ### Cloudflare Access (optional — panel auto-login)
 

@@ -1,5 +1,5 @@
 import http from "node:http";
-import { config, db, logger, proxmox, settings } from "@mcwake/common";
+import { config, db, host, logger, settings } from "@mcwake/common";
 
 let lastTickAt: number | null = null;
 
@@ -18,7 +18,7 @@ async function tick(): Promise<void> {
 
   // Nothing to do if the host is already off — this only ever powers things
   // down, never up (waking up is entirely the lazymc/orchestrator path).
-  const hostUp = await proxmox.isReachable();
+  const hostUp = await host.isReachable();
   if (!hostUp) return;
 
   const thresholdMs = settings.getEffectiveNumber("IDLE_REAPER_THRESHOLD_MINUTES") * 60 * 1000;

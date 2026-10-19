@@ -23,7 +23,9 @@ ENV NODE_ENV=production
 
 # Python + python-kasa for Tapo control (services/common/tapo/) — see
 # tapo/requirements.txt for why this is Python and not native TS.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip git \
+#
+# openssh-client: HOST_BACKEND=wings powers the host off over SSH.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip git openssh-client \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/services/common/tapo ./services/common/tapo
 RUN pip install --no-cache-dir --break-system-packages -r services/common/tapo/requirements.txt

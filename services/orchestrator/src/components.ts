@@ -1,5 +1,5 @@
 import net from "node:net";
-import { config, db, mcstatus, pterodactyl, proxmox } from "@mcwake/common";
+import { config, db, host, mcstatus, pterodactyl } from "@mcwake/common";
 
 export interface ComponentStatus {
   healthy: boolean;
@@ -11,6 +11,8 @@ export interface ComponentsReport {
   database: ComponentStatus;
   lazymc: ComponentStatus;
   idleReaper: ComponentStatus;
+  /** The host's control API (Proxmox or Wings). Key kept as `proxmox` so
+   * existing /healthz/proxmox monitors keep working. */
   proxmox: ComponentStatus;
   pterodactyl: ComponentStatus;
   mcServer: ComponentStatus;
@@ -76,11 +78,11 @@ async function checkMcServer(): Promise<ComponentStatus> {
 }
 
 export async function getComponentsReport(): Promise<ComponentsReport> {
-  const [database, lazymc, idleReaper, proxmoxUp, pterodactylUp, mcServer] = await Promise.all([
+  const [database, lazymc, idleReaper, hostUp, pterodactylUp, mcServer] = await Promise.all([
     checkDatabase(),
     checkLazymc(),
     checkIdleReaper(),
-    proxmox.isReachable(),
+    host.isReachable(),
     checkPterodactyl(),
     checkMcServer(),
   ]);
@@ -90,7 +92,7 @@ export async function getComponentsReport(): Promise<ComponentsReport> {
     database,
     lazymc,
     idleReaper,
-    proxmox: { healthy: proxmoxUp },
+    proxmox: { healthy: hostUp, detail: host.label() },
     pterodactyl: pterodactylUp,
     mcServer,
   };

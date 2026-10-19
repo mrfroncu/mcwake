@@ -5,6 +5,7 @@ export * as settings from "./settings.js";
 export * as http from "./http.js";
 export * as pterodactyl from "./clients/pterodactyl.js";
 export * as proxmox from "./clients/proxmox.js";
+export * as host from "./clients/host.js";
 export * as wol from "./clients/wol.js";
 export * as tapo from "./clients/tapo.js";
 export * as docker from "./clients/docker.js";

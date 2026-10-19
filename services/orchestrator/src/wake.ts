@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { config, db, logger, mcstatus, pterodactyl, proxmox, settings, tapo, wol } from "@mcwake/common";
+import { config, db, host, logger, mcstatus, pterodactyl, settings, tapo, wol } from "@mcwake/common";
 import { withRetry } from "./retry.js";
 
 /** Pterodactyl sits behind Cloudflare and can return a transient 502/504
@@ -15,8 +15,8 @@ export interface WakeResult {
  * Called (via the lazymc bridge script) whenever a player tries to join a
  * sleeping server. Picks the fast path (host already on, just start the MC
  * container) or the slow path (host is fully off — WoL/Tapo, wait for
- * Proxmox, then start the container) depending on whether Proxmox already
- * answers.
+ * the host's control API, then start the container) depending on whether
+ * that API (Proxmox or Wings, see HOST_BACKEND) already answers.
  *
  * Every event this flow records shares one `wake-<uuid>` session id, which
  * is how the /stats endpoint later reconstructs per-phase timing for the
@@ -24,7 +24,7 @@ export interface WakeResult {
  */
 export async function runWakeFlow(): Promise<WakeResult> {
   // Hard guard, independent of lazymc's own [lockout] behavior: while
-  // maintenance mode is on, refuse to touch Tapo/Proxmox/Pterodactyl at all,
+  // maintenance mode is on, refuse to touch Tapo/the host/Pterodactyl at all,
   // no matter what triggered this call (lazymc's join hook or the panel's
   // own Start button).
   if (db.getSetting("LAZYMC_LOCKOUT_ENABLED") === "true") {
@@ -35,7 +35,7 @@ export async function runWakeFlow(): Promise<WakeResult> {
   db.recordEvent("wake_requested", undefined, sessionId);
   db.touchActivity();
 
-  const hostAlreadyUp = await proxmox.isReachable();
+  const hostAlreadyUp = await host.isReachable();
   const path: "fast" | "slow" = hostAlreadyUp ? "fast" : "slow";
 
   if (!hostAlreadyUp) {
@@ -43,10 +43,10 @@ export async function runWakeFlow(): Promise<WakeResult> {
     db.recordEvent("host_boot_start", undefined, sessionId);
     await powerOnHost();
     db.recordEvent("power_on_command_sent", undefined, sessionId);
-    await waitUntil(() => proxmox.isReachable(), {
+    await waitUntil(() => host.isReachable(), {
       timeoutMs: config.numberEnv("HOST_BOOT_TIMEOUT_SECONDS", 600) * 1000,
       intervalMs: config.numberEnv("HOST_POLL_INTERVAL_SECONDS", 5) * 1000,
-      label: "host boot (Proxmox reachable)",
+      label: `host boot (${host.label()} reachable)`,
     });
     db.recordEvent("host_boot_done", undefined, sessionId);
   } else {

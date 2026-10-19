@@ -1,19 +1,20 @@
 import crypto from "node:crypto";
-import { config, db, pterodactyl, proxmox, tapo } from "@mcwake/common";
+import { db, host, pterodactyl, settings, tapo } from "@mcwake/common";
 import { runSleepFlow } from "./sleep.js";
 
 /**
  * Tier-2 idle action: called by the idle-reaper once nobody has connected in
  * IDLE_REAPER_THRESHOLD_MINUTES, or manually from the web panel. Makes sure
  * the MC server is stopped, then shuts down the whole physical host through
- * Proxmox. Idempotent — safe to call when the host is already off.
+ * its control plane (Proxmox, or SSH poweroff on bare metal - HOST_BACKEND).
+ * Idempotent — safe to call when the host is already off.
  *
  * Every event shares one `shutdown-<uuid>` session id (see stats.ts).
  *
  * Only one run at a time. The flow can now last well over ten minutes (a
  * hung server gets a long grace period before it is killed), and callers no
  * longer wait for it to finish, so a second click on the panel button would
- * otherwise start a parallel cascade — two Proxmox shutdowns and, worse, two
+ * otherwise start a parallel cascade — two host shutdowns and, worse, two
  * Tapo power cuts racing each other around the same machine.
  */
 let inFlight: Promise<void> | null = null;
@@ -34,7 +35,7 @@ export function hostShutdownInProgress(): boolean {
 async function runHostShutdownFlowOnce(): Promise<void> {
   const sessionId = `shutdown-${crypto.randomUUID()}`;
 
-  const hostUp = await proxmox.isReachable();
+  const hostUp = await host.isReachable();
   if (!hostUp) {
     db.recordEvent("host_shutdown_skipped", "already off", sessionId);
     return;
@@ -46,7 +47,7 @@ async function runHostShutdownFlowOnce(): Promise<void> {
   }
 
   db.recordEvent("host_shutdown_start", undefined, sessionId);
-  await proxmox.shutdownNode();
+  await host.shutdown();
   db.recordEvent("host_shutdown_requested", undefined, sessionId);
 
   // With the Tapo strategy, the machine only wakes on an AC-restore event
@@ -54,7 +55,10 @@ async function runHostShutdownFlowOnce(): Promise<void> {
   // to have actually gone OFF at some point. Wait for the graceful OS
   // shutdown to genuinely finish (host stops answering) before cutting
   // power — cutting it mid-shutdown risks filesystem corruption.
-  if (config.optionalEnv("POWER_ON_STRATEGY", "wol") === "tapo") {
+  // Same source as the wake path: the panel can override the .env value, and
+  // cutting Tapo power while waking relies on WoL would leave the network card
+  // without the standby power it needs to hear the magic packet.
+  if (settings.getEffectiveString("POWER_ON_STRATEGY") === "tapo") {
     await waitUntilTrulyOff();
     db.recordEvent("host_confirmed_off", undefined, sessionId);
     db.recordEvent("tapo_power_cut_start", undefined, sessionId);
@@ -63,10 +67,18 @@ async function runHostShutdownFlowOnce(): Promise<void> {
   }
 }
 
+const HOST_OFF_GRACE_MS = 30_000;
+
 async function waitUntilTrulyOff(): Promise<void> {
   const deadline = Date.now() + 5 * 60_000;
   while (Date.now() < deadline) {
-    if (!(await proxmox.isReachable())) return;
+    if (!(await host.isReachable())) {
+      // The control API goes quiet before the OS has finished unmounting -
+      // on bare metal Wings is among the first things systemd stops. Give the
+      // shutdown time to complete before the plug cuts power.
+      await new Promise((resolve) => setTimeout(resolve, HOST_OFF_GRACE_MS));
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   // If the host still answers after 5 minutes, something's off — refuse to

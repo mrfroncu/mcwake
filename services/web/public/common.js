@@ -45,14 +45,14 @@ const COMPONENTS = [
   { key: "database", slug: "database", label: "Baza (SQLite)" },
   { key: "lazymc", slug: "lazymc", label: "lazymc" },
   { key: "idleReaper", slug: "idle-reaper", label: "Idle-reaper" },
-  { key: "proxmox", slug: "proxmox", label: "Proxmox API" },
+  { key: "proxmox", slug: "proxmox", label: "Host (Proxmox / Wings)" },
   { key: "pterodactyl", slug: "pterodactyl", label: "Pterodactyl API" },
   { key: "mcServer", slug: "mc-server", label: "Serwer Minecraft" },
 ];
 
 const WAKE_PHASES = [
   { key: "requestToPowerOn", cls: "p1", label: "Zlecenie → zasilanie" },
-  { key: "hostBoot", cls: "p2", label: "Boot hosta (Proxmox)" },
+  { key: "hostBoot", cls: "p2", label: "Boot hosta" },
   { key: "wingsContainerStart", cls: "p3", label: "Start Wings/kontenera" },
   { key: "minecraftBoot", cls: "p4", label: "Start Minecrafta" },
 ];
