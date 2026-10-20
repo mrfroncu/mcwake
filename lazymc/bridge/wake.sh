@@ -3,7 +3,7 @@
 # it starts this script when a player tries to join a sleeping server, and
 # sends it SIGTERM when it decides to sleep the server again (sleep_after).
 #
-# All the actual WoL/Proxmox/Pterodactyl orchestration logic lives in the
+# All the actual Wake-on-LAN/Pterodactyl orchestration logic lives in the
 # orchestrator service — this script just calls it over HTTP and stays alive
 # in between, per docs/command-bash.md's trap-and-wait pattern.
 set -eu

@@ -7,7 +7,8 @@ version = "${PUBLIC_MOTD_VERSION}"
 protocol = ${PUBLIC_MOTD_PROTOCOL}
 
 [server]
-# Real Minecraft server, reachable from this container (e.g. over WireGuard).
+# Real Minecraft server, reachable from this container (the home router
+# forwards this port to the game host).
 address = "${MC_SERVER_HOST}:${MC_SERVER_PORT}"
 
 # Just a placeholder directory lazymc expects to exist. The real
@@ -17,13 +18,13 @@ directory = "/lazymc/serverdir"
 
 # This is the integration point: instead of lazymc spawning `java` itself, it
 # runs our bridge script, which talks to the orchestrator over HTTP to do the
-# actual WoL/Proxmox/Pterodactyl orchestration. See lazymc/bridge/wake.sh.
+# actual Wake-on-LAN/Pterodactyl orchestration. See lazymc/bridge/wake.sh.
 command = "/lazymc/bridge/wake.sh"
 
 wake_on_start = false
 wake_on_crash = false
 
-# Must be well above the realistic worst-case cold-boot time (WoL + Proxmox
+# Must be well above the realistic worst-case cold-boot time (WoL + host
 # boot + Wings + MC container start).
 start_timeout = ${LAZYMC_START_TIMEOUT_SECONDS}
 stop_timeout = ${LAZYMC_STOP_TIMEOUT_SECONDS}
@@ -38,7 +39,7 @@ forge = ${LAZYMC_FORGE}
 [time]
 # Tier 1 (fast): how long after the last player leaves before lazymc asks the
 # bridge script to stop the MC container. This does NOT touch the physical
-# host — see the idle-reaper service for the tier-2 (multi-day) shutdown.
+# host — the orchestrator's idle shutdown does that (tier 2, multi-day).
 sleep_after = ${LAZYMC_SLEEP_AFTER_SECONDS}
 minimum_online_time = 60
 

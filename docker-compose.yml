@@ -1,81 +1,54 @@
+# mcwake on the home server: the orchestrator, alone. lazymc runs on a VPS
+# (docker-compose.vps.yml) and the management panel lives in the dashboard.
 services:
-  # Only started with `--profile local-lazymc` — lazymc normally runs on a
-  # separate VPS (docker-compose.vps.yml) so player sessions survive a
-  # restart of this host. Use this profile to run everything on one box.
-  lazymc:
-    profiles: ["local-lazymc"]
-    build:
-      context: .
-      dockerfile: lazymc/Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "${PUBLIC_PORT:-25565}:${PUBLIC_PORT:-25565}"
-    depends_on:
-      - orchestrator
-    networks:
-      - mcwake
-
   orchestrator:
     build:
-      context: .
-      dockerfile: services/orchestrator/Dockerfile
+      context: orchestrator
+      # Fetch the current node base before each build instead of reusing a
+      # weeks-old local copy.
+      pull: true
     restart: unless-stopped
     env_file: .env
     environment:
       - LOG_FILE=/data/logs/orchestrator.log
     ports:
-      # Reached from outside this Docker host by lazymc on the VPS and by the
-      # dashboard — bind it to this host's Tailscale IP via
-      # ORCHESTRATOR_BIND_ADDRESS in .env (localhost-only if unset).
+      # Reached by lazymc on the VPS and by the dashboard, over Tailscale:
+      # bind it to this host's Tailscale IP (localhost-only if unset).
       - "${ORCHESTRATOR_BIND_ADDRESS:-127.0.0.1}:${ORCHESTRATOR_PORT:-7100}:${ORCHESTRATOR_PORT:-7100}"
     volumes:
       - mcwake-data:/data
-      # No Docker socket here by default. It is root on this host, and the
-      # only thing it was ever used for is restarting lazymc when lazymc runs
-      # next to us (the local-lazymc profile) - add it for that case with
-      #   docker compose -f docker-compose.yml -f docker-compose.local-lazymc.yml ...
-      # When lazymc lives on a VPS behind Arcane, the restart goes through a
-      # single-purpose Arcane webhook instead (ARCANE_LAZYMC_WEBHOOK_URL).
     networks:
-      - mcwake
+      mcwake:
+        # The default route stays on the bridge: lazymc and the dashboard come
+        # in through the published port, and replies must leave the same way.
+        gw_priority: 1
+      lan:
+        # A leg on the home LAN, for Wake-on-LAN: from the bridge, a packet to
+        # the LAN broadcast address is delivered to this Docker host itself and
+        # never reaches the game host. The API refuses connections arriving on
+        # this address (src/index.ts).
+        ipv4_address: ${WOL_LAN_ADDRESS:?set WOL_LAN_ADDRESS in .env}
+    # Nothing in here needs a capability, a writable image or root.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:7100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  idle-reaper:
-    build:
-      context: .
-      dockerfile: services/idle-reaper/Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - LOG_FILE=/data/logs/idle-reaper.log
-    volumes:
-      - mcwake-data:/data
-    depends_on:
-      - orchestrator
-    networks:
-      - mcwake
-
-  web:
-    build:
-      context: .
-      dockerfile: services/web/Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
-    depends_on:
-      - orchestrator
-    networks:
-      - mcwake
-
 networks:
   mcwake:
     driver: bridge
+  lan:
+    # An existing ipvlan/macvlan network on this host (br0 on Unraid).
+    name: ${WOL_LAN_NETWORK:-br0}
+    external: true
 
 volumes:
   mcwake-data:

@@ -1,650 +1,194 @@
 # mcwake
 
-Automatic wake/sleep for an entire physical Minecraft server (a bare-metal
-box running Proxmox + Pterodactyl/Wings) — players connect at the same
-address at all times, while the physical machine stays powered off between
-sessions instead of burning electricity 24/7 for a few hours of play every
-now and then.
+Automatic wake and sleep for a whole physical Minecraft server. Players
+connect to the same address at all times; the machine running the game
+stays powered off between sessions instead of burning electricity around
+the clock for a few hours of play.
 
-When someone joins while the server is asleep: they get a "server is
-waking up" message instead of a connection refusal, while in the
-background the system powers on the physical machine, waits for Proxmox to
-come up, tells Pterodactyl to start the Minecraft container, and lets the
-player through automatically as soon as the server actually responds. When
-nobody plays for a while, the system sleeps the container on its own, and
-after a longer silence shuts down the whole computer. Everything is
-controlled from a web panel, no SSH required.
+When someone joins a sleeping server they get a "server is starting"
+message, while in the background the machine is woken with Wake-on-LAN,
+Pterodactyl starts the Minecraft server, and the player can join as soon
+as it answers. When nobody plays for a while, the server is stopped; after
+a longer silence the whole machine is powered off.
 
-## Table of contents
+The management panel is part of the Alleria dashboard, which talks to the
+orchestrator's API (below).
 
-- [How it works (short version)](#how-it-works-short-version)
-- [Architecture](#architecture)
-- [Web panel](#web-panel)
-- [Panel configuration (`.env` overrides)](#panel-configuration-env-overrides)
-- [Maintenance mode](#maintenance-mode)
-- [Safety and fault tolerance](#safety-and-fault-tolerance)
-- [Tech stack](#tech-stack)
-- [How it works — step by step](#how-it-works--step-by-step)
-- [External system configuration](#external-system-configuration)
-- [Installation](#installation)
-- [External monitoring](#external-monitoring-uptime-kuma-and-similar)
-- [Large modpacks (Forge) and status-ping](#large-modpacks-forge-and-status-ping)
-- [Tapo / TPAP — why Python](#tapo--tpap--why-python)
-- [Known limitations and possible extensions](#known-limitations-and-possible-extensions)
-- [Implementation status](#implementation-status)
-- [Repo structure](#repo-structure)
-- [Testing / development](#testing--development)
+## How it works
 
-## How it works (short version)
+Two idle tiers, so a short break does not cost a cold boot and a long one
+really saves power:
 
-Two idle models, switchable with one toggle in the panel
-(`SLEEP_TRIGGERS_FULL_SHUTDOWN`):
+1. **Sleep (lazymc)** — `sleep_after` after the last player leaves, only
+   the Minecraft server is stopped. The machine stays on, so coming back the
+   same day takes seconds.
+2. **Idle shutdown (orchestrator)** — after a long silence (7 days by
+   default), the machine is powered off. Counted from a last-activity time
+   kept in SQLite, so it survives restarts of lazymc and of the orchestrator.
 
-- **Two-tier** (default) — short breaks in playing don't cost a long wait,
-  long ones genuinely save power:
-  1. **Fast tier (`lazymc`)** — once the last player leaves, only the
-     Minecraft container in Pterodactyl gets put to sleep. The physical
-     machine stays on, so coming back the same day just means a container
-     restart — seconds, not minutes.
-  2. **Slow tier (`idle-reaper`)** — only after real, sustained silence
-     (7 days by default) does the system shut down the whole physical
-     server through Proxmox.
-- **Single-tier** — `lazymc`'s own threshold (set to your real target, e.g.
-  ~7 days) shuts down the whole host directly instead of just sleeping the
-  container. Keep `idle-reaper` **enabled** even here, with a matching
-  threshold — `lazymc`'s own timer lives only in that process's memory and
-  resets to zero on any restart of the `lazymc` container (a redeploy, a
-  crash, a host reboot — not just a deliberate one), silently keeping the
-  machine on far longer than intended. `idle-reaper` reads a persistent,
-  SQLite-backed last-activity timestamp instead, so it survives `lazymc`
-  restarts and acts as the real backstop.
-
-Waking the physical machine goes through a **TP-Link Tapo smart plug**
-controlled in software (Wake-on-LAN was the original plan, but the network
-hardware never got WoL support on Linux — [details below](#tapo--tpap--why-python)).
-
-Everything is controlled from the **web panel**: start/stop/full shutdown,
-**maintenance mode** (blocks accidental wake-ups, e.g. during servicing),
-editing most settings without touching `.env`, wake/shutdown timing
-statistics, logs, health checks for every component.
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph internet["Internet"]
-        player["🎮 Minecraft player"]
-        admin["🧑‍💻 Admin"]
-        cfaccess["☁️ Cloudflare Access\n(optional, in front of the panel domain)"]
-    end
-
-    subgraph unraid["Unraid — always on, same LAN as the dedicated box"]
-        lazymc["lazymc :60320\nproxy + MOTD"]
-        orchestrator["orchestrator :7100\nall wake/sleep logic"]
-        tapod["tapo_daemon.py\n(inside the orchestrator container)"]
-        reaper["idle-reaper :7102\nslow-tier idle counter"]
-        web["web :8459\npublic status + management panel"]
-        sqlite[("SQLite\nactivity / events / settings")]
-        sock[("/var/run/docker.sock\n(restart lazymc from the panel)")]
-    end
-
-    subgraph lan["LAN (192.168.100.x)"]
-        dedyk["Dedicated box\nProxmox + Wings + real MC server"]
-        tapodev["🔌 Tapo P300"]
-    end
-
-    pterodactyl["Pterodactyl API\npanel.alleria.pl"]
-
-    player -->|"game connection"| lazymc
-    admin -->|"verified token"| cfaccess --> web
-    admin -.->|"fallback: password, IP:port"| web
-
-    lazymc -->|"POST /wake /sleep"| orchestrator
-    lazymc -.->|"status-ping directly every 2s"| dedyk
-
-    orchestrator --> tapod --> tapodev
-    orchestrator -->|"start/stop/status"| pterodactyl --> dedyk
-    orchestrator -->|"shutdown/reachable?"| dedyk
-    orchestrator --> sqlite
-    orchestrator -.->|"restart container"| sock
-
-    reaper -->|"after idle threshold"| orchestrator
-    web -->|"REST"| orchestrator
-```
-
-- **lazymc** — the only thing players ever see: a Minecraft proxy with a
-  custom MOTD. When someone joins a sleeping server, it runs
-  `bridge/wake.sh` (configured as `server.command`), which calls the
-  orchestrator over HTTP and stays alive until lazymc tells it to stop.
-  Independently, it also pings the real server directly every 2s to detect
-  that it's already up.
-- **orchestrator** — all the logic: fast vs. slow wake path, Tapo, Proxmox
-  API, Pterodactyl API, SQLite (activity, events, settings, phase-timing
-  stats), health checks for the other components, restarting lazymc
-  through the Docker Engine API.
-- **idle-reaper** — an independent, slow-tier watchdog for the idle
-  threshold; its own small HTTP server (`/health`) for monitoring.
-- **web** — the panel: public status (`/`, no login) + management behind a
-  password or Cloudflare Access (`/manage`) + `/healthz*` for external
-  monitoring.
-- **tapo_daemon.py** — a long-lived process alongside the orchestrator in
-  the same container, holding one session to the Tapo strip instead of
-  doing an expensive handshake on every single action.
-
-## Web panel
-
-### `/` — public status, no login
-
-- **Components** — a tile for every part of the system (panel,
-  orchestrator, database, lazymc, idle-reaper, Proxmox, Pterodactyl, the
-  MC server itself) + time since last activity.
-- **Wake/shutdown stats** — the last 20 wake-ups and 20 shutdowns, broken
-  into phases with the exact duration of each (a proportional color bar +
-  exact mm:ss text), a live Tapo cooldown countdown.
-- A maintenance-mode banner, if active.
-
-### `/manage` — management (password or Cloudflare Access)
+`SLEEP_TRIGGERS_FULL_SHUTDOWN` collapses the two into one: lazymc's
+threshold then powers the machine off directly.
 
 ```mermaid
 flowchart LR
-    req["Request to /manage"] --> sess{"Session already\nauthenticated?"}
-    sess -->|yes| ok["Panel"]
-    sess -->|no| cf{"Valid Cloudflare\nAccess token?"}
-    cf -->|yes, cryptographically verified| ok
-    cf -->|none / fails verification| login["/login.html\n(password from WEB_PASSWORD)"]
-    login -->|correct password| ok
+    player["Player"] --> lazymc["lazymc\n(VPS)"]
+    lazymc -->|"game traffic"| mc["Minecraft in Wings\n(game host)"]
+    lazymc -->|"wake / sleep\n(Tailscale)"| orch["orchestrator\n(home server)"]
+    dash["Alleria dashboard"] -->|"API (Tailscale)"| orch
+    orch -->|"Wake-on-LAN"| host["game host"]
+    orch -->|"is Wings up?"| host
+    orch -->|"SSH: poweroff only"| host
+    orch -->|"start / stop / state"| ptero["Pterodactyl panel"]
+    orch -->|"restart lazymc\n(webhook)"| arcane["Arcane"]
 ```
 
-- **Management** — start, sleep just the container, full machine shutdown
-  (with confirmation), a **maintenance mode** switch.
-- **Players** — last seen, sitting next to Management in the same row.
-- **Idle policy** — current thresholds for both tiers, at a glance.
-- **Components** — same as the public page, plus idle time.
-- **Configuration** — editing most settings without `.env`, see
-  [the section below](#panel-configuration-env-overrides).
-- **Wake/shutdown stats** — same as the public page.
-- **Events** — full history (wake/sleep/shutdown/restart/maintenance mode
-  — all timestamped).
-- **Logs** — orchestrator, idle-reaper, Tapo (separate, side by side).
+- **lazymc** (`lazymc/`, on a VPS) — the address players connect to. It
+  proxies game traffic to the real server and runs `bridge/wake.sh` as its
+  "server process": starting it asks the orchestrator to wake, stopping it
+  asks the orchestrator to sleep. Player sessions go VPS → game host
+  directly, so they survive a restart of the home server.
+- **orchestrator** (`orchestrator/`, on the always-on home server) — all the
+  logic, one Node process: wake, sleep, idle shutdown, player activity,
+  stats, panel settings and maintenance mode. It must live on the home LAN:
+  the game host cannot wake itself.
 
-## Panel configuration (`.env` overrides)
+### Waking
 
-Most settings can be changed from the **Configuration** card instead of
-editing `.env` and restarting containers by hand. An override is stored in
-SQLite and takes precedence over `.env` — clearing it (the "↺ default"
-button) reverts to the `.env`/default value.
+1. Maintenance mode on → refused, nothing is touched.
+2. Wings answers on `WINGS_URL` → fast path. Otherwise a Wake-on-LAN packet
+   goes out (and again every 30 seconds) until Wings answers.
+3. Pterodactyl starts the server unless it is already running.
+4. Done once Minecraft answers a status ping on `MC_SERVER_HOST`.
 
-```mermaid
-flowchart LR
-    v["Effective setting value"] --> a{"Overridden\nin the panel?"}
-    a -->|yes| b["from SQLite"]
-    a -->|no| c{"Set in\n.env?"}
-    c -->|yes| d["from .env"]
-    c -->|no| e["default value"]
-```
+### Sleeping and powering off
 
-| Group | Settings |
-|---|---|
-| Public MOTD | MC version and protocol shown on the server list before anyone connects |
-| lazymc behavior | container sleep threshold (a day/hour/minute picker instead of raw seconds), whether the server is Forge |
-| MOTD messages | every message: sleeping / waking / stopping / kick-while-waking / kick-while-stopping / maintenance-mode message |
-| Power | wake strategy (Tapo / WoL, dropdown), Tapo plug cooldown in seconds |
-| Idle model | single-tier / two-tier switch |
-| Idle-reaper | enabled/disabled, idle threshold, poll interval |
+- **Sleep**: refused while anyone is still connected (checked by pinging the
+  real server, which also sees players who did not come through lazymc);
+  otherwise Pterodactyl stops the server. A server that hangs on shutdown
+  gets `MC_STOP_GRACE_MINUTES`, then a kill — which does not save the world,
+  hence the long grace period.
+- **Power off**: stops the server as above, then
+  `ssh <HOST_SSH_TARGET>` with a key whose authorized_keys entry runs
+  `systemctl poweroff` and nothing else.
 
-Fields that affect `lazymc` (MOTD, sleep threshold, Forge) are marked
-"requires restart: lazymc" — they take effect once the container restarts,
-which the panel does in one click (see below). Everything else (power
-strategy, idle model, idle-reaper settings) applies immediately, no restart
-— those services read the effective value live, not just once at startup.
+Wake, sleep and power-off **take turns** (`src/power.ts`): a wake that
+arrives while the machine is shutting down waits for the shutdown and then
+wakes it from cold, instead of starting a server the poweroff is about to
+cut off. Concurrent wake requests share one run.
 
-**Restarting lazymc from the panel** — the orchestrator has
-`/var/run/docker.sock` mounted and restarts the `lazymc` container through
-the Docker Engine API (no `docker` CLI, straight HTTP to the socket), so
-applying a restart-requiring setting is one click instead of SSH-ing into
-the server. That's real control over the whole Docker host, not just this
-stack — if you'd rather not grant that, just remove the entry from
-`volumes:` under `orchestrator` in `docker-compose.yml` and restart
-`lazymc` manually (`docker compose restart lazymc`).
+### Maintenance mode
 
-## Maintenance mode
+A switch in the dashboard for servicing the machine. lazymc's `[lockout]`
+kicks every join before any wake logic runs, and the orchestrator refuses
+`/wake` on its own, whatever asked for it. Toggling it restarts lazymc
+(through the Arcane webhook) so the message applies at once — that
+disconnects connected players, which is why the dashboard asks first.
 
-A switch in the **Management** card — a safeguard for servicing (e.g.
-updating something on the physical machine) so a player can't accidentally
-wake it up mid-maintenance.
+## Configuration
 
-```mermaid
-flowchart TB
-    join["Player tries to join"] --> lockout{"Maintenance\nmode?"}
-    lockout -->|on| kick["Instant kick\nwith a custom message — no wake attempt at all"]
-    lockout -->|off| normal["Normal flow\n(wakes if asleep)"]
-    normal --> wakecall["orchestrator: POST /wake"]
-    wakecall --> guard{"Maintenance mode?\n(checked independently)"}
-    guard -->|on| refuse["Refused — Tapo/Proxmox\nuntouched"]
-    guard -->|off| proceed["Wakes as usual"]
-```
+Everything is in `.env` (copy `.env.example`; every variable is commented
+there). Texts and thresholds can be overridden from the dashboard — those
+overrides live in SQLite, `.env` only gives the starting values.
 
-Two independent layers of protection, so no single one has to be perfect:
+### The game host
 
-1. **lazymc `[lockout]`** — every join is rejected instantly, before any
-   sleep/wake logic even runs.
-2. **A hard block in the orchestrator** — `POST /wake` refuses to execute,
-   regardless of what called it (lazymc or the panel), before it ever
-   touches Tapo/Proxmox.
+Ubuntu with Wings installed straight on the machine.
 
-Toggling it automatically restarts `lazymc` so the new message takes
-effect immediately — that disconnects currently-connected players, which
-is why the panel asks for confirmation first.
+1. **Wake-on-LAN**: in the BIOS, ErP off and "Resume by PCI-E" (or similar)
+   on; on Linux, `wakeonlan: true` on the interface in netplan, so the
+   network card keeps listening after poweroff. Check with
+   `ethtool <interface> | grep Wake-on` (it should say `g`).
+2. **Poweroff key**: generate it in the orchestrator's volume and put the
+   host's key next to it (an unknown host key fails rather than being
+   trusted):
+   ```
+   docker compose exec orchestrator ssh-keygen -t ed25519 -N "" -C mcwake-poweroff -f /data/ssh/id_ed25519
+   ```
+   and on the host, one line in `/root/.ssh/authorized_keys`:
+   ```
+   restrict,command="/usr/bin/systemctl poweroff",from="<WOL_LAN_ADDRESS>" ssh-ed25519 AAAA... mcwake-poweroff
+   ```
+   `/data/ssh/known_hosts` holds `<host> ssh-ed25519 AAAA...`, taken from the
+   host's `/etc/ssh/ssh_host_ed25519_key.pub`.
+3. **Firewall**: let `WOL_LAN_ADDRESS` reach Wings' API port and SSH.
 
-## Safety and fault tolerance
+### The orchestrator's LAN leg
 
-- **The idle counter doesn't depend only on lazymc.** `lazymc` only sees
-  players who connect through its own proxy — if there's any other path to
-  the real server (e.g. a direct backup connection), the idle counter on
-  its own would be blind to that activity. That's why an independent
-  poller (`activity.ts`) pings the real server **directly** every 30s, with
-  lazymc entirely out of the picture, and refreshes the global
-  last-activity marker whenever anyone is online — no matter how they
-  connected. That's the same marker `idle-reaper` compares against the
-  shutdown threshold.
-- **An extra check right before execution.** On top of the above, the
-  orchestrator pings the server directly once more, right before every
-  actual sleep/shutdown (automatic or manual from the panel) — if anyone
-  happens to be online at that moment, the operation is refused and logged
-  as a `sleep_aborted` event.
-- **An Unraid outage can't leave the server "stuck" in a bad state.** Both
-  waking and sleeping go through the orchestrator — if the host running it
-  is down, neither action can execute (not just waking). Any resulting
-  state confusion on lazymc's side (it might briefly show "sleeping"
-  incorrectly) self-corrects the moment the host is back and the next
-  status poll succeeds.
-- **Cloudflare Access is verified cryptographically**, not by the mere
-  presence of a header — the token is checked against Cloudflare's public
-  keys for this specific application (`aud`), so it can't be forged by
-  hitting the panel directly over IP:port.
-- **Static panel assets are served with `Cache-Control: no-store`** —
-  without that, Cloudflare can cache JS/CSS at the edge and keep serving a
-  stale version after a deploy, even with fresh code on the server.
-- **Tapo power is only cut after confirming Proxmox actually stopped
-  responding** (not right after sending the shutdown command) — cutting
-  power mid-shutdown could corrupt the filesystem.
-
-## Tech stack
-
-| Layer | What and why |
-|---|---|
-| Minecraft proxy | [lazymc](https://github.com/timvisee/lazymc) (Rust) — MOTD for a sleeping server, detecting it's already up, kick-with-message, `[lockout]` for maintenance mode. Compiled from source with one patch (see below). |
-| Backend | Node.js 20 + TypeScript, [Express](https://expressjs.com/) — the orchestrator and the web panel. |
-| Database | [SQLite](https://sqlite.org/) via [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) — last-seen, event log, phase-timing stats, panel setting overrides. One file, a shared Docker volume. |
-| Power control | [python-kasa](https://github.com/python-kasa/python-kasa) (a fork with TPAP support, see below) — controlling the Tapo P300 strip's socket over its local API. |
-| Restarting containers from the panel | The Docker Engine API directly over a mounted `/var/run/docker.sock` — no `docker` CLI in the image. |
-| Panel authentication | [`jose`](https://github.com/panva/jose) — verifying signed Cloudflare Access tokens (JWKS), plus a classic password (`express-session`) as a fallback. |
-| Containers | Docker + Docker Compose — four services (`lazymc`, `orchestrator`, `idle-reaper`, `web`), multi-stage Dockerfiles. |
-| Web panel | Plain HTML + CSS + vanilla JS (no framework). |
-| External APIs | Pterodactyl Client API (MC server status and control), Proxmox VE API (host status and shutdown). |
-| Monitoring | `/healthz` and `/healthz/:component` — plain HTTP endpoints compatible with [Uptime Kuma](https://github.com/louislam/uptime-kuma). |
-
-## How it works — step by step
-
-### Waking up (a player joins a sleeping server)
-
-```mermaid
-sequenceDiagram
-    participant P as Player
-    participant L as lazymc
-    participant O as orchestrator
-    participant PT as Tapo / Proxmox
-    participant W as Wings / Pterodactyl
-
-    P->>L: tries to join (server asleep)
-    L->>O: POST /wake
-    O->>O: maintenance mode? is Proxmox already reachable?
-    alt fast path — host already on
-        Note over O: skips powering anything on
-    else slow path — host is off
-        O->>PT: wait out any Tapo cooldown, power on
-        O->>PT: poll until Proxmox responds
-    end
-    O->>W: check state, send start signal if needed
-    O->>W: wait until the container stops reporting offline
-    O->>W: wait until the game port actually responds
-    O-->>L: server ready
-    L-->>P: let through
-```
-
-1. **Request** — recorded as a `wake_requested` event, starting a new
-   stats session.
-2. **"Request → power on" phase** (slow path only) — waiting out any Tapo
-   cooldown, then powering on (or sending the WoL magic packet).
-3. **"Host boot" phase** — polling the Proxmox API until it responds
-   (`HOST_BOOT_TIMEOUT_SECONDS`, 10 minutes by default).
-4. **"Wings/container start" phase** — waiting until Pterodactyl stops
-   reporting `offline`.
-5. **"Minecraft start" phase** — polling the game port directly until it
-   responds — the real Minecraft/Forge boot time.
-6. An `mc_ready` event closes out the stats session.
-
-### Sleeping and shutting down
-
-```mermaid
-sequenceDiagram
-    participant L as lazymc (sleep_after)
-    participant O as orchestrator
-    participant W as Pterodactyl
-    participant Px as Proxmox
-    participant T as Tapo
-
-    L->>O: POST /sleep
-    O->>O: ping the server directly — anyone online?
-    alt someone is connected (any path)
-        O-->>L: refused (sleep_aborted)
-    else nobody's playing
-        O->>W: stop (world saved)
-        opt single-tier model / slow tier after the idle threshold
-            O->>Px: shutdown (graceful, like shutdown -h now)
-            O->>Px: wait until the host stops responding
-            O->>T: cut power
-        end
-    end
-```
-
-- **Fast tier** — the last player leaves → after
-  `LAZYMC_SLEEP_AFTER_SECONDS`, lazymc sends SIGTERM to `bridge/wake.sh` →
-  `POST /sleep` → the orchestrator stops just the MC container. The
-  physical host stays on.
-- **Slow tier** — idle-reaper checks time since last activity every
-  `IDLE_REAPER_POLL_INTERVAL_MINUTES`; once
-  `IDLE_REAPER_THRESHOLD_MINUTES` is exceeded, it calls
-  `POST /admin/shutdown-host` (the same thing the "Shut down the whole
-  server" button in the panel triggers).
-
-## External system configuration
-
-The whole setup goes through `.env` (copy it from `.env.example`, every
-variable has a comment there) — most of it can later be changed from the
-panel (see [above](#panel-configuration-env-overrides)). Below is what
-needs doing *outside* this repo.
+From Docker's default bridge, a packet to the LAN broadcast address is
+delivered to the Docker host itself and never leaves it. So the
+orchestrator is also attached to an existing ipvlan/macvlan network of the
+Docker host (`br0` on Unraid) at a fixed `WOL_LAN_ADDRESS`, while its
+default route stays on the bridge (`gw_priority`). The API drops any
+connection that arrives on the LAN address: it is reachable only through
+the published port on the Tailscale address.
 
 ### Pterodactyl
 
-1. **Client API key** (not the Application API!) — log in as a regular
-   user, click your avatar in the top-right corner → **API Credentials**
-   → **Create New**. No permissions to pick.
-   → `PTERODACTYL_API_KEY`
-2. **Server ID** — the short 8-character identifier from the address bar:
-   `https://panel.example.com/server/XXXXXXXX`. Not the full UUID, not the
-   numeric database ID.
-   → `PTERODACTYL_SERVER_ID`
-3. `PTERODACTYL_URL` — the panel's address.
+A **Client API** key (not the Application API) of an account that has
+access to the server → `PTERODACTYL_API_KEY`; the server's 8-character id
+from its panel address → `PTERODACTYL_SERVER_ID`. Ideally a dedicated
+account, added to this one server as a subuser with power permissions only.
 
-### The host's control plane — Proxmox or bare metal
+### lazymc on the VPS
 
-`HOST_BACKEND` says what answers for the dedicated box:
-
-- `proxmox` (default) — Wings runs in a VM. The host counts as up once the
-  Proxmox API answers, and it is shut down through that API (below).
-- `wings` — Wings runs straight on the machine, no hypervisor. The host
-  counts as up once Wings answers on `WINGS_URL` (a 401 is fine — it proves
-  the daemon is serving, which is also the moment Pterodactyl can start the
-  server). It is shut down over SSH with a dedicated key that can do
-  nothing but power off:
-  1. `ssh-keygen -t ed25519 -N "" -f id_ed25519` and put both files in the
-     `mcwake-data` volume under `ssh/` (`HOST_SSH_KEY`), plus the host's
-     key in `ssh/known_hosts` (`HOST_SSH_KNOWN_HOSTS`) — an unknown host
-     key fails instead of being trusted.
-  2. On the host, one line in `/root/.ssh/authorized_keys`:
-     `restrict,command="/usr/bin/systemctl poweroff",from="<orchestrator IP>" ssh-ed25519 AAAA... mcwake-poweroff`
-  3. `HOST_SSH_TARGET=root@<host>`; let the orchestrator's address reach
-     Wings' port through the host firewall.
-
-The `/healthz/proxmox` check and its panel tile follow whichever backend
-is set; the name stays so existing monitors keep working.
-
-### Proxmox
-
-1. **API Token**: Datacenter → Permissions → API Tokens → Add. **Uncheck
-   "Privilege Separation"** so the token inherits the user's full rights
-   (otherwise you need to grant `Sys.PowerMgmt` separately — without it,
-   shutting down the host returns a 403).
-   → `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET`
-2. `PROXMOX_HOST` — the Proxmox address (`https://<ip>:8006`).
-3. `PROXMOX_NODE` — the node name shown in the left panel under
-   "Datacenter".
-4. `PROXMOX_ALLOW_SELF_SIGNED=true` if Proxmox uses its own certificate.
-
-### Waking the physical machine — Tapo or WoL
-
-`POWER_ON_STRATEGY=tapo` or `wol` (also editable from the panel —
-Configuration → Power).
-
-**Tapo** (recommended if the network hardware doesn't support WoL):
-- `TAPO_EMAIL` / `TAPO_PASSWORD` — Tapo account login.
-- `TAPO_DEVICE_IP` — the device's own IP on the LAN, **not** a Tapo hub.
-- A multi-socket strip: `TAPO_CHILD_POSITION` (port number, recommended)
-  or `TAPO_CHILD_NAME` (the exact socket alias).
-- `TAPO_POWER_OFF_COOLDOWN_SECONDS` — the minimum time off before the
-  orchestrator turns the plug back on (editable from the panel, with a
-  live countdown next to the Stats).
-
-**WoL** — requires a network card with Wake-on-LAN support on Linux
-(`ethtool <interface>`, look for a `Wake-on:` line) and "Power On by
-PCI-E" (or similar) enabled in the BIOS:
-- `WOL_MAC_ADDRESS` — the dedicated box's network card MAC address.
-- `WOL_TARGET_ADDRESS` — your LAN's broadcast address, **not** the box's
-  plain IP (it's off, so unicast can't work — there's no way to resolve ARP).
-- The orchestrator needs a leg on the LAN to send it: from Docker's default
-  bridge, a packet to the LAN broadcast address is delivered to the Docker
-  host itself and never leaves it. `docker-compose.lan-wol.yml` attaches
-  the orchestrator to an existing ipvlan/macvlan network (`br0` on Unraid)
-  at a fixed `WOL_LAN_ADDRESS`, while the default route stays on the
-  bridge. Enable it with
-  `COMPOSE_FILE=docker-compose.yml:docker-compose.lan-wol.yml` in `.env`.
-- With WoL, keep the box's power on at the socket: the network card listens
-  for the packet on standby power.
-
-### Cloudflare Access (optional — panel auto-login)
-
-If the panel's domain already sits behind Cloudflare Access, the password
-can be skipped for traffic that already passed through it — verified
-cryptographically, so going straight to IP:port (LAN/Tailscale) still
-correctly requires the password:
-
-- `CF_ACCESS_TEAM_DOMAIN` — Zero Trust → Settings, in the form
-  `<team>.cloudflareaccess.com`.
-- `CF_ACCESS_AUD` — Zero Trust → Access → Applications → (this
-  application) → Overview → "Application Audience (AUD) Tag".
-
-Leave both empty to disable this path entirely (password-only, as before).
-
-### Network
-
-- Unraid (or whatever hosts `docker compose`) and the dedicated box need a
-  shared network — today that's a plain LAN, no VPN.
-- Port forward on the home router: `WAN:PUBLIC_PORT` →
-  `Unraid-LAN-IP:PUBLIC_PORT` — that's how players connect from outside.
-- The web panel (`WEB_PORT`) doesn't need to be exposed externally — LAN-only
-  access is fine by default.
+`docker-compose.vps.yml`, deployed by Arcane GitOps. Its own `.env` needs
+`PUBLIC_PORT`, `MC_SERVER_HOST`/`MC_SERVER_PORT` (how the VPS reaches the
+game server), `ORCHESTRATOR_URL` (the home server's Tailscale address and
+port) and `ORCHESTRATOR_INTERNAL_TOKEN` — set to the orchestrator's
+`ORCHESTRATOR_LAZYMC_TOKEN`, so the VPS holds a token that can only wake,
+sleep and read lazymc's config. An Arcane webhook that restarts the lazymc
+project goes into the orchestrator's `ARCANE_LAZYMC_WEBHOOK_URL`.
 
 ## Installation
 
 ```bash
-cp .env.example .env
-# fill in .env — see the section above
-
+cp .env.example .env    # fill it in
 docker compose up -d --build
-docker compose logs -f
 ```
 
-Panel: `http://<unraid-lan-ip>:<WEB_PORT>`. Public status at `/`, the
-management password is `WEB_PASSWORD` (or auto-login via Cloudflare
-Access, if configured).
+The container runs as an unprivileged user with a read-only filesystem and
+no capabilities; its state (SQLite, logs, the SSH key) is the
+`mcwake-data` volume.
 
-`docker compose up` above starts orchestrator, idle-reaper and web only —
-lazymc is expected on a separate VPS (next section). To run everything on
-one host instead, add `--profile local-lazymc`.
+## API
 
-### lazymc on a separate VPS
+Every route except `/health` needs `Authorization: Bearer <token>`.
 
-Player sessions are proxied by lazymc straight to the real server, so with
-lazymc on an always-on VPS they survive a restart of the home server; only
-waking/sleeping needs the orchestrator, reached over Tailscale.
+| Route | Who | |
+|---|---|---|
+| `GET /health` | anyone | liveness, for the container healthcheck |
+| `POST /wake` | lazymc, admin | wake and start; answers when Minecraft is up |
+| `POST /sleep` | lazymc, admin | stop the server (or power off, in the one-tier model) |
+| `GET /config/lazymc` | lazymc, admin | lazymc's settings as shell-sourceable lines |
+| `POST /admin/shutdown-host` | admin | power the machine off; answers at once |
+| `POST /admin/maintenance` | admin | `{enabled}`; restarts lazymc |
+| `POST /admin/restart/lazymc` | admin | apply settings lazymc reads at start |
+| `GET`/`POST /config/settings` | admin | panel settings (`{key, value}`, `null` resets) |
+| `GET /status`, `/activity`, `/components`, `/stats`, `/logs` | admin | state for the dashboard |
 
-- **VPS**: `docker-compose.vps.yml` (lazymc alone, container name
-  `mcwake-lazymc`), e.g. as an Arcane GitOps project syncing this repo. Its
-  own `.env` needs `PUBLIC_PORT`, `MC_SERVER_HOST`/`MC_SERVER_PORT` (the
-  server's public address — a DDNS hostname is fine, lazymc restarts itself
-  when it resolves to a new IP), `ORCHESTRATOR_URL=http://<home Tailscale
-  IP>:7100`, `ORCHESTRATOR_INTERNAL_TOKEN`, and the `LAZYMC_*`/`PUBLIC_MOTD_*`
-  values as a fallback for when the orchestrator is unreachable.
-- **Home server** `.env`: `ORCHESTRATOR_BIND_ADDRESS=<home Tailscale IP>`,
-  `LAZYMC_HOST=<VPS Tailscale IP>` (health check), and
-  `ARCANE_LAZYMC_WEBHOOK_URL` so the panel's "restart lazymc" goes through
-  an Arcane webhook. Create it in Arcane with target type *project*
-  (`mcwake-lazymc`, which stays stable when the container is recreated) and
-  action *restart*. Do not give mcwake an Arcane API key: a key is a
-  credential for the whole manager on every host it runs, a webhook token
-  can restart that one project and nothing else.
-
-## External monitoring (Uptime Kuma and similar)
-
-The panel exposes plain, no-login-required HTTP endpoints:
-
-| Endpoint | Checks |
-|---|---|
-| `GET /healthz` | everything at once — 200 only if every component is healthy, 503 otherwise |
-| `GET /healthz/web` | the panel itself |
-| `GET /healthz/orchestrator` | the orchestrator |
-| `GET /healthz/database` | SQLite |
-| `GET /healthz/lazymc` | the proxy (port is listening) |
-| `GET /healthz/idle-reaper` | the slow-tier counter |
-| `GET /healthz/proxmox` | the Proxmox API responds |
-| `GET /healthz/pterodactyl` | the Pterodactyl API responds |
-| `GET /healthz/mc-server` | the Minecraft server itself responds to a status-ping |
-
-Each one returns `200` when healthy, `503` when not.
+"admin" is `ORCHESTRATOR_INTERNAL_TOKEN` (the dashboard), "lazymc" is
+`ORCHESTRATOR_LAZYMC_TOKEN`.
 
 ## Large modpacks (Forge) and status-ping
 
-lazymc polls the real server directly (status-ping) every 2 seconds to
-detect that it's already up. Two real problems showed up during testing
-with a large modpack (ATM9, ~300 mods), and hitting them is quite likely
-with other large Forge modpacks too:
+lazymc polls the real server's status-ping to see that it is up. Two
+problems show up with large modpacks:
 
-1. **The server icon (`server-icon.png`) has a 32 KB limit on the whole
-   status-ping response.** An unoptimized 64×64 icon (even a few KB) can
-   exceed that once base64-encoded. Fix: replace it with a well-compressed
-   PNG (256 colors or fewer) — via the Pterodactyl Client API
-   (`files/write`) if you have access. **Requires restarting the MC
-   server** — the icon is loaded once at startup.
-2. **Forge appends a mod list (`forgeData`) to the status-ping** in a
-   shape the protocol library lazymc uses can't parse (`invalid type: map,
-   expected a string`) — not a size issue, the JSON shape itself differs
-   from what the library understands. Sometimes `description`/MOTD is a
-   chat-component object instead of a plain string too, which the same
-   strict parser also rejects.
+1. **The whole status response is limited to 32 KB**, and an unoptimised
+   `server-icon.png` can exceed that once base64-encoded. Use a small,
+   well-compressed icon (the server reads it once, at start).
+2. **Forge appends a mod list (`forgeData`)** in a shape lazymc's protocol
+   library cannot parse, and the MOTD is sometimes a chat-component object.
+   `lazymc/patches/monitor.rs` (applied in its Dockerfile) retries a failed
+   parse after stripping `forgeData`/`modinfo` and flattening the
+   description; lazymc does not use that data anyway.
 
-   There's a patch in `lazymc/patches/monitor.rs`, applied in the
-   Dockerfile after `git clone` and before compiling: when the strict
-   decoder fails, the patch manually extracts the raw JSON, strips
-   `forgeData`/`modinfo`, flattens an object-shaped `description` down to a
-   plain string, and tries again. lazymc doesn't use that data anyway, so
-   removing it doesn't break anything — it just lets the rest parse.
+## Development
 
-## Tapo / TPAP — why Python
-
-A short history, because it shapes the code: the original plan was plain
-Wake-on-LAN. The dedicated box's network card (Qualcomm Atheros Killer
-E2400, `alx` driver) **never got WoL support on Linux** — the feature was
-removed from the kernel in 2013 over a bug and never officially came back
-(an unofficial DKMS patch exists; `docs/alx-wol-instrukcja.md` has notes in
-case this gets revisited — deliberately shelved as too risky for a
-production hypervisor without always-available physical access).
-
-The replacement: a **TP-Link Tapo** plug/strip, controlled in software.
-That ran into a second problem: firmware 1.4.x on these devices moved to a
-new local-API protocol — **TPAP** (a SPAKE2+/ECDSA handshake) instead of
-the older KLAP. **No JavaScript/TypeScript library supports it** — hence
-Python: [python-kasa](https://github.com/python-kasa/python-kasa) has it in
-an unfinished, unofficial PR
-([python-kasa/python-kasa#1592](https://github.com/python-kasa/python-kasa/pull/1592)),
-which `services/common/tapo/` builds on (a fork with one extra fix, pinned
-to a specific commit).
-
-A SPAKE2+ handshake is noticeably more expensive computationally than
-plain hashing — for the P300's modest microcontroller, redoing it from
-scratch on every single action could clog the device up enough that it
-stopped responding to discovery. That's why
-`services/common/tapo/tapo_daemon.py` is a **long-lived process** holding
-one session for a full day instead of reconnecting from zero every time —
-`tapo.ts` on the Node.js side talks to it over local HTTP
-(`127.0.0.1:7101`). Every connection/action is logged
-(`/data/logs/tapo.log`, visible in the panel's Logs card).
-
-## Known limitations and possible extensions
-
-- **lazymc is a single point of failure for player connectivity.** All
-  player traffic goes through `lazymc` — now on a separate VPS (see
-  [Installation](#installation)), so a home-server restart no longer cuts
-  players off, but a VPS outage still does.
-- **DNS SRV doesn't provide real failover** — Minecraft clients in
-  practice don't retry other `SRV` records on a failed connection (a
-  [known Mojang bug](https://bugs.mojang.com/browse/MC-151920)), so a
-  second record as a "backup" wouldn't actually help.
-- Syncing `banned-ips.json` with Wings (currently `block_banned_ips=false`).
-- A per-phase (dynamic) MOTD message for the fast vs. slow wake path — one
-  message covers both for now.
-
-## Implementation status
-
-- ✅ Tapo (TPAP, via a Python daemon, with logging) + Wake-on-LAN as an
-  alternative strategy
-- ✅ Pterodactyl (status + power start/stop), Proxmox (reachability +
-  shutdown)
-- ✅ Single- and two-tier idle logic, switchable from the panel
-- ✅ Web panel: public status with no login, management behind a password
-  or Cloudflare Access, configuration without `.env`, maintenance mode,
-  one-click lazymc restart
-- ✅ Checking for players directly on the server before every
-  sleep/shutdown (independent of how they connected)
-- ✅ Component health checks + `/healthz*` for Uptime Kuma
-- ✅ lazymc patch for large Forge modpacks (icon size limit, `forgeData`
-  format, `description` as a chat-component)
-- ⬜ Syncing `banned-ips.json` with Wings
-- ⬜ Per-phase MOTD message for the fast vs. slow wake path
-- ⬜ `lazymc`/`web` on a separate VPS (resilience against an Unraid outage)
-
-## Repo structure
-
-```
-lazymc/                          # Docker image: lazymc + config template + bridge script + patch
-  patches/monitor.rs              # patch for large Forge modpacks
-  bridge/wake.sh                  # server.command — the bridge to the orchestrator
-  lazymc.toml.template            # generated at start from the effective settings
-
-services/common/                 # shared TypeScript code
-  src/db.ts                       # SQLite: activity, players, events/sessions, panel settings
-  src/settings.ts                 # panel settings catalog + panel/.env/default resolution
-  src/clients/                    # Pterodactyl, Proxmox, WoL, Tapo, Docker Engine API, MC status
-  tapo/                            # Python daemon (python-kasa fork) + requirements.txt
-
-services/orchestrator/           # HTTP API: /wake /sleep /admin/* /config/* /status /components /stats /logs
-  src/wake.ts                     # wake path (fast/slow), stats phases
-  src/sleep.ts                     # tier 1 — sleeping the MC container + direct player check
-  src/hostShutdown.ts              # tier 2 — full host shutdown
-  src/stats.ts                     # computing phases from event sessions
-  src/components.ts                # health checks for the other services
-
-services/idle-reaper/            # independent process watching the idle threshold + its own /health
-
-services/web/                    # web panel
-  src/cfAccess.ts                  # Cloudflare Access token verification
-  public/                          # static assets, the public page (/)
-  views/manage.html                # the management panel
+```bash
+cd orchestrator
+npm install
+npm test      # builds, then runs the tests in dist/
 ```
 
-## Testing / development
-
-Docker is only available locally for building images (`docker compose
-build`) and type checking (`npm run typecheck`) — not for actually running
-the stack, since all the logic (Tapo, Proxmox, Pterodactyl) requires the
-real home network. Real testing happens on the target server over SSH.
+Security review: [docs/audyt-bezpieczenstwa-2026-10-20.md](docs/audyt-bezpieczenstwa-2026-10-20.md).

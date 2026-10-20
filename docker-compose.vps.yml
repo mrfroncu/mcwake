@@ -1,5 +1,5 @@
-# lazymc alone, for a separate VPS — the rest of the stack (orchestrator,
-# idle-reaper, web) stays on the home server in docker-compose.yml. Player
+# lazymc alone, for a separate VPS — the orchestrator stays on the home
+# server in docker-compose.yml. Player
 # sessions are proxied VPS -> real MC server directly, so they survive a
 # restart of the home server; only waking/sleeping needs the orchestrator,
 # reached over Tailscale.
@@ -8,7 +8,8 @@
 # The project's .env lives only on the VPS, next to this file, and needs:
 #   PUBLIC_PORT, MC_SERVER_HOST, MC_SERVER_PORT,
 #   ORCHESTRATOR_URL (http://<home Tailscale IP>:7100),
-#   ORCHESTRATOR_INTERNAL_TOKEN,
+#   ORCHESTRATOR_INTERNAL_TOKEN (the orchestrator's ORCHESTRATOR_LAZYMC_TOKEN,
+#   which only reaches /wake, /sleep and /config/lazymc),
 #   plus the LAZYMC_* / PUBLIC_MOTD_* values as a fallback for when the
 #   orchestrator is unreachable at container start.
 services:
