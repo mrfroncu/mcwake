@@ -22,7 +22,7 @@ dostęp do gniazda Dockera i obsługę API Proxmoxa.
 
 | # | Waga | Ustalenie | Status |
 |---|---|---|---|
-| 1 | 🟠 | Jeden token do całego API, kopia na VPS | ✅ w kodzie; nowy token wdraża skrypt |
+| 1 | 🟠 | Jeden token do całego API, kopia na VPS | ✅ token lazymc wdrożony, token administracyjny wymieniony |
 | 2 | 🟠 | Teksty z panelu wklejane do `lazymc.toml` bez escapowania | ✅ |
 | 3 | 🟠 | API orchestratora osiągalne z całego LAN przez nogę ipvlan | ✅ |
 | 4 | 🟠 | Panel webowy mcwake na `0.0.0.0:8459` | ✅ usunięty |
@@ -33,11 +33,11 @@ dostęp do gniazda Dockera i obsługę API Proxmoxa.
 | 9 | 🟡 | Ustawienia bez kontroli typu i długości | ✅ |
 | 10 | 🟡 | Log i tabela zdarzeń rosną bez końca | ✅ |
 | 11 | 🟡 | Node 20 po końcu wsparcia | ✅ Node 24 |
-| 12 | 🟡 | Klucz API Pterodactyla należy do konta root-admina | ⏳ do decyzji |
-| 13 | 🟡 | Stare kopie z sekretami na UNRAID | ⏳ po weryfikacji wdrożenia |
+| 12 | 🟡 | Klucz API Pterodactyla należy do konta root-admina | ✅ konto serwisowe, stary klucz unieważniony |
+| 13 | 🟡 | Stare kopie z sekretami na UNRAID | ✅ usunięte |
 | 14 | ℹ️ | Wake-on-LAN bez uwierzytelnienia | przyjęte |
 | 15 | ℹ️ | Uprawnienie „control" w dashboardzie obejmuje wyłączenie hosta | przyjęte |
-| 16 | ℹ️ | `kt-direct.alleria.pl` ujawnia domowe IP | do decyzji (poza kodem) |
+| 16 | ℹ️ | `kt-direct.alleria.pl` ujawnia domowe IP | przyjęte — SFTP musi działać z zewnątrz |
 
 ## Ustalenia
 
@@ -164,3 +164,13 @@ Tailscale (alokacja serwera także na adresie tailnetu), wtedy przekierowanie 60
 - Webhook Arcane może tylko zrestartować projekt lazymc; adres nie trafia do logów.
 - `/config/lazymc` zwraca wartości w apostrofach z poprawnie escapowanym `'`, więc `entrypoint.sh` lazymc nie wykona nic z tekstu.
 - Port API publikowany tylko na adresie Tailscale UNRAID; ruch lazymc i dashboardu idzie w WireGuard.
+
+## Status wdrożenia (2026-10-20)
+
+- **#1:** lazymc na network4 ma własny token (sprawdzone: `/config/lazymc` 200, `/admin/shutdown-host` 403). Token
+  administracyjny, który leżał w `.env` lazymc, został wymieniony na UNRAID i w dashboardzie.
+- **#12:** konto panelu `mcwake@alleria.pl` — podużytkownik KT5 tylko z `control.start` i `control.stop`, bez roli
+  administratora i bez hasła, które ktokolwiek zna. Jego klucz widzi jeden serwer. Klucz root-admina z opisem „mcwake"
+  unieważniony dopiero po tym, jak orchestrator użył nowego.
+- **#13:** usunięte cztery kopie `.env` (jedna, `.env.bak-pre-vps`, miała uprawnienia 644) i dwa archiwa z UNRAID oraz kopia
+  `.env` lazymc na network4.
